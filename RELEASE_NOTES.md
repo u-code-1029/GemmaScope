@@ -18,9 +18,12 @@
 
 ## 시험 배포 안내
 
+- Windows에서 자동 테스트 48개와 실제 설치·앱 시작 검증을 통과했습니다. [검증 기록](https://github.com/u-code-1029/GemmaScope/actions/runs/38779768837)
 - Windows x64용입니다. 코드 서명되지 않은 개발용 설치 파일이므로 Windows 보안 알림이 표시될 수 있습니다.
 - NVIDIA GPU를 감지하면 CUDA용 PyTorch 설치를 시도합니다. GPU/드라이버에 따라 CPU 실행을 선택해야 할 수 있습니다.
 - Windows 자동 검증은 단위·통합 테스트와 패키지 시작, 포함 Python 및 가상환경 생성을 확인합니다. 실제 Windows GPU에서의 모델 학습 성능을 보증하는 검증은 아닙니다.
 - 실제 SEM/TEM 정확도는 라벨링한 독립 시험 자료로 평가해야 하며, 기타 이미지의 오탐 0을 보장하지 않습니다.
 
 `SHA256SUMS.txt`에서 설치 파일의 SHA-256 값을 확인할 수 있습니다.
+
+빌드 소스: `19fe7cbeabb4c8aa4c8ff18f9c217186ce1bc04d`.

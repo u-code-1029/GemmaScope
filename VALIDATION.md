@@ -29,9 +29,18 @@
 
 이 측정은 임베딩 모델 추론을 포함하지 않고, 동일 시험 원본 경로를 공유하며 파일 시스템 캐시가 준비된 조건이다. 실제 10만 개 파일의 최초 이미지 처리·외장 드라이브 속도를 측정한 것이 아니다. 상세: `test-results/search-benchmark.json`.
 
+## Windows 설치본 검증 — 2026-10-16
+
+- GitHub Actions의 실제 Windows x64 환경에서 Python 45개 및 Node 3개 테스트 모두 통과.
+- Windows NSIS 설치 파일을 생성하고 공백·한글 경로에 실제 설치한 뒤, 설치된 `GemmaScope.exe`를 실행하여 시작 화면과 오류 부재를 확인.
+- 시스템 Python을 지정하지 않은 상태에서 설치본의 Python 3.12.12를 사용함을 확인. 공백·한글 경로의 가상환경 및 pip 생성도 성공.
+- Windows에서 발견한 MRC 파일 잠금 문제 수정. RosettaSciIO의 Dask 메타데이터 추론 및 프레임 읽기 작업에서 만든 모든 메모리 매핑을 명시적으로 닫음. 가져오기 직후와 첫 프레임 처리 중 원본 이동·삭제 검사를 통과.
+- [성공한 빌드 및 검증](https://github.com/u-code-1029/GemmaScope/actions/runs/38779768837), 빌드 소스 `19fe7cbeabb4c8aa4c8ff18f9c217186ce1bc04d`. 상세 보고서와 화면은 `test-results/windows-validation/`.
+- 실제 Windows에서의 ML 패키지 전체 설치, 모델 추론·미세조정 및 NVIDIA GPU/드라이버 조합 검증은 아직 수행하지 않음. 핵심 고정 버전의 Windows Python 3.12 배포 파일 존재는 공식 PyPI/CUDA 인덱스에서 별도 확인.
+
 ## 배포 범위와 남은 검증
 
 - macOS ARM64 앱 번들·DMG·ZIP을 생성. 개발용 앱 실행과 패키지 기본 시작을 각각 검증 완료. 패키지는 시스템 Python 및 기존 학습 환경을 지정하지 않은 상태에서 번들 Python 3.12.14로 시작했고, 빈 프로젝트 및 초기 환경 설치 화면이 정상 표시됨. 상세: `test-results/packaged/report.json`.
-- Windows x64 코드와 NSIS 빌드/CI 구성 포함. Windows 기기와 CUDA GPU에서의 실제 실행·설치·학습은 이 Mac에서 검증할 수 없으므로 미검증이다.
+- Windows x64 NSIS 설치·앱 시작 검증은 위 CI에서 완료. 실제 Windows 학습 및 CUDA GPU 검증은 별도로 필요하다.
 - 설치 프로그램은 서명·공증되지 않았다. 제품 배포용 인증서 작업은 포함하지 않았다.
 - 사용자 현미경 이미지에서의 오탐률·재현율·문장 검색 품질은 라벨링한 실제 독립 시험 자료로 확인해야 한다. 오탐 0을 보장하지 않는다.
