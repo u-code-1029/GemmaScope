@@ -1,15 +1,24 @@
-name: Desktop validation and installers
+name: Windows validation and installer
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
+permissions:
+  contents: read
+
 jobs:
   desktop:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,29 +28,60 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.9.5'
-      - name: Prepare standalone Python
-        shell: bash
+      - name: Install JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Prepare managed standalone Python
         run: |
           uv python install 3.12
-          PYTHON_BIN="$(uv python find 3.12)"
-          RUNTIME_DIR="$("$PYTHON_BIN" -c 'import sys; print(sys.base_prefix)')"
-          npm run runtime:prepare -- --from "$RUNTIME_DIR"
-      - run: npm ci --no-audit --no-fund
-      - name: Python integration tests
-        shell: bash
+          if ($LASTEXITCODE -ne 0) { throw 'uv Python installation failed' }
+          $PythonExe = (uv python find --managed-python --system 3.12).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'uv managed Python lookup failed' }
+          $RuntimeDir = (& $PythonExe -c 'import sys; print(sys.base_prefix)').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Python runtime prefix lookup failed' }
+          node scripts/prepare-runtime.cjs --from "$RuntimeDir"
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone runtime preparation failed' }
+          "GEMMASCOPE_CI_PYTHON=$PythonExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Python integration tests without model downloads
         run: |
-          uv venv --python 3.12 .venv
-          uv pip install --python .venv -r backend/requirements-ml.txt
-          uv run --no-project --python .venv python -m unittest discover -s tests -p 'test_*.py' -v
-      - run: npm test
-      - name: Build installer
-        run: npm run dist
+          uv venv --python "$env:GEMMASCOPE_CI_PYTHON" .venv
+          if ($LASTEXITCODE -ne 0) { throw 'Test virtual environment creation failed' }
+          uv pip install --python .venv/Scripts/python.exe -r tests/requirements-ci.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Test dependency installation failed' }
+          & .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Python integration tests failed' }
+      - name: Desktop unit tests
+        run: npm test
+      - name: Build Windows x64 installer
+        run: npm run dist:win -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - uses: actions/upload-artifact@v4
+      - name: Install packaged app into a path containing spaces and Korean
+        run: |
+          $Installers = @(Get-ChildItem release -Filter 'GemmaScope-Setup-*-x64.exe')
+          if ($Installers.Count -ne 1) { throw 'Expected exactly one Windows x64 installer' }
+          $InstallDir = Join-Path $env:RUNNER_TEMP 'GemmaScope Install 한글'
+          # NSIS requires /D to be the last argument, without quoting its value.
+          $InstallerProcess = Start-Process -FilePath $Installers[0].FullName -ArgumentList "/S /D=$InstallDir" -Wait -PassThru
+          if ($InstallerProcess.ExitCode -ne 0) { throw "Installer exited with $($InstallerProcess.ExitCode)" }
+          $InstalledExe = Join-Path $InstallDir 'GemmaScope.exe'
+          if (-not (Test-Path $InstalledExe)) { throw 'Installed executable not found' }
+          "GEMMASCOPE_INSTALLED_EXE=$InstalledExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Installed application smoke test
+        run: |
+          npm install --no-save --package-lock=false --no-audit --no-fund playwright@1.62.1
+          if ($LASTEXITCODE -ne 0) { throw 'Playwright installation failed' }
+          node scripts/smoke-packaged.cjs "$env:GEMMASCOPE_INSTALLED_EXE"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed application smoke test failed' }
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: GemmaScope-${{ matrix.os }}
-          path: |
-            release/*.dmg
-            release/*.zip
-            release/*.exe
+          name: GemmaScope-Windows-validation
+          path: test-results/packaged/
+          if-no-files-found: ignore
+      - name: Upload verified installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: GemmaScope-Windows-x64
+          path: release/GemmaScope-Setup-*-x64.exe
+          if-no-files-found: error

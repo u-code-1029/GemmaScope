@@ -1,0 +1,6 @@
+# Storage, scientific readers, frozen-head fitting, and index/search tests.
+# Model encoding is isolated in algorithm tests; no model downloads or Torch.
+numpy==2.5.4
+Pillow==12.3.0
+scikit-learn==1.9.1
+rosettasciio==0.15.0
