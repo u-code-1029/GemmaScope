@@ -53,3 +53,10 @@
 - 합성 상호작용 검사 4개 통과: IME 조합 키 이벤트 보호, 짧은/긴 작업 메시지 높이 88px 유지와 로그 포커스·스크롤 보존, 검색 조건 변경 후 결과/CSV 초기화, 프로젝트 응답 300ms 지연 중 Delete/Undo/라벨 입력 차단. OS 한글 입력기 자체나 모델 추론을 검증한 것으로 해석하지 않는다.
 - 이전 검색 응답이 새 검색어 결과를 덮는 경합도 실제 입력 핸들러를 실행하는 별도 회귀 검사로 확인.
 - 로컬 UI 화면 및 보고서: `test-results/usability/`. 재현 스크립트: `scripts/smoke-usability.cjs`. Windows CI에도 동일 UI 검사를 추가했다.
+
+### 0.2.0 Windows 설치본
+
+- Windows x64에서 Python 55개, Node 3개, 실제 UI 8개 흐름과 합성 상호작용 4개 검사를 모두 통과했다.
+- NSIS 설치 파일을 한글·공백 경로에 설치하고 실제 실행, 포함 Python 3.12.12, 가상환경·pip 생성 및 렌더러 오류 부재를 확인했다.
+- [성공한 Windows 빌드](https://github.com/u-code-1029/GemmaScope/actions/runs/38791514296), 빌드 소스 `92279f7`. 보고서·화면은 `test-results/windows-v0.2-validation/`에 보관했다.
+- 첫 Windows 검사에서 테스트용 SQLite 연결을 닫지 않은 문제, 이후 UI 검사에서 목록 갱신 완료보다 빨리 단언하던 문제를 수정했다. 삭제·복원·원본 보존에 대한 검사 조건은 유지했다.
