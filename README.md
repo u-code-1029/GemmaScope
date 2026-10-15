@@ -4,7 +4,7 @@ EmbeddingGemma 2를 사용하는 로컬 SEM·TEM 이미지 학습·검색 데스
 
 ## 실행
 
-Windows x64 설치 파일은 [GitHub Releases](https://github.com/u-code-1029/GemmaScope/releases)에서 다운로드합니다. **GemmaScope-Setup-0.1.0-x64.exe**를 실행해 설치하세요. 저장소는 비공개이므로 소유자 GitHub 계정으로 로그인해야 합니다. Python은 포함되어 있으며 최초 실행 시 앱에서 학습 패키지를 설치합니다.
+Windows x64 설치 파일은 [GitHub Releases](https://github.com/u-code-1029/GemmaScope/releases)에서 로그인 없이 다운로드합니다. **GemmaScope-Setup-0.1.0-x64.exe**를 실행해 설치하세요. Python은 포함되어 있으며 최초 실행 시 앱에서 학습 패키지를 설치합니다.
 
 이 작업 폴더에서는 `Launch GemmaScope.command`를 더블클릭하면 준비된 학습 환경으로 실행됩니다. Mac Apple Silicon 설치 파일은 `release/GemmaScope-0.1.0-arm64.dmg`입니다. 설치본은 별도 데이터 폴더를 사용하므로 처음 실행할 때 아래의 학습 환경 설치가 필요합니다. 개발용 설치 파일로, 서명·공증은 되어 있지 않습니다.
 
