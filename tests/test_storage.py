@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sqlite3
 import struct
 import tempfile
 import threading
@@ -122,6 +123,135 @@ class StorageTests(unittest.TestCase):
             self.store.update_metadata([id_], {"acquired_at": "not a date"})
         self.store.label([id_], None)
         self.assertEqual(self.store.training_records(), [])
+
+    def test_remove_restore_preserves_files_annotations_and_models(self):
+        source = self.image()
+        self.store.import_folder(self.sources)
+        original = self.store.all_records()[0]
+        id_ = original["id"]
+        self.store.label([id_], "SEM", "specimen-A")
+        self.store.update_metadata([id_], {"sample": "gold"})
+        model = self.store.root / "runs" / "saved-model" / "classifier.json"
+        model.parent.mkdir(parents=True)
+        model.write_bytes(b'{"preserved":true}')
+        paths = [source, Path(original["render_path"]), *self.store.thumb_dir.iterdir(), model]
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
+        self.assertEqual(self.store.remove_images([id_, id_]), {"removed": 1, "ids": [id_]})
+        self.assertEqual(self.store.stats()["total"], 0)
+        self.assertEqual(self.store.stats()["removed"], 1)
+        self.assertEqual(self.store.stats()["groups"], 0)
+        self.assertEqual(self.store.stats()["labeled"], 0)
+        self.assertEqual(self.store.stats()["counts"]["SEM"], 0)
+        self.assertEqual(self.store.images()["items"], [])
+        self.assertEqual(self.store.images(filter="SEM", query="image")["total"], 0)
+        self.assertEqual(self.store.all_records(), [])
+        self.assertEqual(self.store.training_records(), [])
+        self.assertEqual(self.store.get_images([id_]), [])
+        self.assertIsNone(self.store.thumbnail(id_))
+        removed = self.store.images(filter="REMOVED", query="gold")["items"]
+        self.assertEqual([row["id"] for row in removed], [id_])
+        self.assertTrue(removed[0]["thumbnail"].startswith("data:image/jpeg;base64,"))
+        self.assertTrue(removed[0]["removed_at"])
+        with self.assertRaises(ValueError):
+            self.store.label([id_], "TEM")
+        with self.assertRaises(ValueError):
+            self.store.update_metadata([id_], {"sample": "wrong"})
+        reopened = Store(self.store.root)
+        self.assertEqual(reopened.stats()["removed"], 1)
+        self.assertEqual(reopened.restore_images([id_, id_]), {"restored": 1, "ids": [id_]})
+        restored = reopened.training_records()[0]
+        self.assertEqual((restored["id"], restored["label"], restored["group"], restored["metadata"]["sample"]),
+                         (id_, "SEM", "specimen-A", "gold"))
+        self.assertIsNone(restored["removed_at"])
+        self.assertEqual(reopened.stats()["removed"], 0)
+        self.assertEqual(reopened.images(filter="REMOVED")["total"], 0)
+        for path, expected in before.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), expected)
+
+    def test_remove_restore_validates_whole_batch_and_returns_only_changed_ids(self):
+        self.image("one.png", 100)
+        self.image("two.png", 200)
+        self.store.import_folder(self.sources)
+        one, two = [row["id"] for row in self.store.all_records()]
+        for invalid in [[one, 999999], [one, True], [one, "2"], [one, 2**64]]:
+            with self.assertRaises(ValueError):
+                self.store.remove_images(invalid)
+            self.assertEqual(self.store.stats()["total"], 2)
+        self.store.remove_images([one])
+        self.assertEqual(self.store.remove_images([one, two, two]), {"removed": 1, "ids": [two]})
+        self.assertEqual(self.store.remove_images([one]), {"removed": 0, "ids": []})
+        with self.assertRaises(ValueError):
+            self.store.restore_images([one, 999999])
+        self.assertEqual(self.store.stats()["total"], 0)
+        self.assertEqual(self.store.restore_images([two]), {"restored": 1, "ids": [two]})
+        self.assertEqual(self.store.restore_images([two]), {"restored": 0, "ids": []})
+        self.assertEqual([row["id"] for row in self.store.images(filter="REMOVED")["items"]], [one])
+        self.assertEqual(self.store.remove_images([]), {"removed": 0, "ids": []})
+        self.assertEqual(self.store.restore_images([]), {"restored": 0, "ids": []})
+
+    def test_reimport_does_not_restore_removed_content_or_copy(self):
+        source = self.image()
+        self.store.import_folder(self.sources)
+        id_ = self.store.all_records()[0]["id"]
+        self.store.remove_images([id_])
+        shutil.copyfile(source, self.sources / "copy.png")
+        result = self.store.import_folder(self.sources)
+        self.assertEqual((result["imported"], result["duplicates"], result["total"]), (0, 2, 0))
+        self.assertEqual(self.store.stats()["removed"], 1)
+        self.assertEqual(self.store.restore_images([id_])["ids"], [id_])
+        self.assertEqual(self.store.stats()["total"], 1)
+
+    def test_removed_revision_is_retained_but_cannot_replace_new_content(self):
+        self.image()
+        self.store.import_folder(self.sources)
+        old = self.store.all_records()[0]
+        self.store.label([old["id"]], "SEM")
+        self.store.remove_images([old["id"]])
+        self.image(color=222)
+        with self.assertRaisesRegex(ValueError, "원본이 변경"):
+            self.store.restore_images([old["id"]])
+        self.store.import_folder(self.sources)
+        new = self.store.all_records()[0]
+        self.assertNotEqual(new["id"], old["id"])
+        self.assertIsNone(new["label"])
+        self.assertEqual(self.store.stats()["removed"], 1)
+        with self.assertRaisesRegex(ValueError, "새 버전"):
+            self.store.restore_images([old["id"]])
+        self.assertEqual([row["id"] for row in self.store.all_records()], [new["id"]])
+
+    def test_restore_missing_source_and_project_isolation(self):
+        source = self.image()
+        self.store.import_folder(self.sources)
+        second = Store(self.root / "another-project")
+        second.import_folder(self.sources)
+        id_ = self.store.all_records()[0]["id"]
+        self.store.remove_images([id_])
+        second.remove_images([id_])
+        source.unlink()
+        self.store.restore_images([id_])
+        self.assertTrue(self.store.images()["items"][0]["missing"])
+        self.assertEqual(second.stats()["total"], 0)
+        self.assertEqual(second.stats()["removed"], 1)
+
+    def test_existing_project_migrates_without_replacing_records(self):
+        self.image()
+        self.store.import_folder(self.sources)
+        id_ = self.store.all_records()[0]["id"]
+        self.store.label([id_], "TEM")
+        legacy_root = self.root / "legacy-project"
+        legacy_root.mkdir()
+        with self.store._connection() as current, sqlite3.connect(legacy_root / "catalog.sqlite3") as legacy:
+            create = current.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='images'").fetchone()[0]
+            legacy.execute(create.replace(", removed_at TEXT", ""))
+            columns = [row["name"] for row in current.execute("PRAGMA table_info(images)") if row["name"] != "removed_at"]
+            row = current.execute("SELECT " + ",".join(columns) + " FROM images").fetchone()
+            legacy.execute("INSERT INTO images(" + ",".join(columns) + ") VALUES(" + ",".join("?" * len(columns)) + ")", tuple(row))
+        migrated = Store(legacy_root)
+        self.assertEqual(migrated.training_records()[0]["id"], id_)
+        self.assertEqual(migrated.training_records()[0]["label"], "TEM")
+        self.assertEqual(migrated.stats()["removed"], 0)
+        self.assertEqual(migrated.remove_images([id_])["removed"], 1)
+        self.assertEqual(Store(legacy_root).restore_images([id_])["restored"], 1)
 
     def test_literal_search_and_pagination(self):
         for i, name in enumerate(["sample_1.png", "sample%2.png", "other.png"]):

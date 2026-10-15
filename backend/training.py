@@ -783,7 +783,7 @@ def search(records, run, config, index_dir, cache_dir):
         raise ValueError("색인 파일이 없습니다. 색인을 다시 만드세요.")
     db = sqlite3.connect((folder / "entries.sqlite").resolve().as_uri() + "?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
-    candidates, excluded, stale, indexed, seen = [], 0, 0, 0, set()
+    candidates, excluded, stale, indexed, incomplete, seen = [], 0, 0, 0, 0, set()
     try:
         for row in db.execute("SELECT * FROM entries"):
             record = latest.get(row["id"])
@@ -794,7 +794,10 @@ def search(records, run, config, index_dir, cache_dir):
                 stale += 1
                 continue
             if row["status"] != "complete":
-                excluded += 1
+                # A saved base embedding or failed detector is not a model
+                # rejection. It still needs indexing, even though its ID is
+                # present in the checkpoint database.
+                incomplete += 1
                 continue
             if not row["chunk"] or not (folder / row["chunk"]).is_file():
                 stale += 1
@@ -858,7 +861,8 @@ def search(records, run, config, index_dir, cache_dir):
                       "frame": record.get("frame", 0), "label": item["label"],
                       "score": item["score"], "similarity": item["similarity"],
                       "metadata": record.get("metadata") or {}, "thumbnail": record.get("thumbnail")})
+    unindexed = len(latest) - len(seen) + incomplete
     return {"items": items, "total": len(candidates), "excluded": excluded, "indexed": indexed,
-            "stale": stale, "unindexed": len(latest) - len(seen),
+            "stale": stale, "unindexed": unindexed, "incomplete": incomplete,
             "threshold": threshold, "run_id": run["id"],
-            "warning": "변경되거나 추가된 이미지는 색인을 다시 만들어야 검색됩니다." if stale or len(seen) != len(latest) else None}
+            "warning": "변경된 이미지나 색인이 완료되지 않은 이미지가 있습니다. 검색 색인을 다시 생성하세요." if stale or unindexed else None}

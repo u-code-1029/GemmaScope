@@ -127,12 +127,18 @@ class Store:
                   frames INTEGER NOT NULL DEFAULT 1, label TEXT,
                   specimen_group TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
                   render_path TEXT NOT NULL, thumbnail_path TEXT NOT NULL,
-                  metadata TEXT NOT NULL DEFAULT '{}', imported_at TEXT NOT NULL,
+                  metadata TEXT NOT NULL DEFAULT '{}', imported_at TEXT NOT NULL, removed_at TEXT,
                   UNIQUE(sha256, frame), CHECK(label IS NULL OR label IN ('SEM','TEM','OTHER')));
                 CREATE INDEX IF NOT EXISTS images_label ON images(label);
                 CREATE INDEX IF NOT EXISTS images_path ON images(path);
                 CREATE TABLE IF NOT EXISTS source_roots (path TEXT PRIMARY KEY);
             """)
+            # Existing projects migrate in place without rebuilding IDs, labels,
+            # source references, or the content identity constraint.
+            db.execute("BEGIN IMMEDIATE")
+            if "removed_at" not in {row["name"] for row in db.execute("PRAGMA table_info(images)")}:
+                db.execute("ALTER TABLE images ADD COLUMN removed_at TEXT")
+            db.execute("CREATE INDEX IF NOT EXISTS images_active_label ON images(label,id) WHERE removed_at IS NULL")
 
     @contextmanager
     def _connection(self):
@@ -148,14 +154,15 @@ class Store:
 
     def stats(self):
         with self._connection() as db:
-            rows = db.execute("SELECT label, COUNT(*) n FROM images GROUP BY label").fetchall()
+            rows = db.execute("SELECT label, COUNT(*) n FROM images WHERE removed_at IS NULL GROUP BY label").fetchall()
             counts = {"SEM": 0, "TEM": 0, "OTHER": 0, "UNLABELED": 0}
             for row in rows:
                 counts[row["label"] or "UNLABELED"] = row["n"]
-            groups = db.execute("SELECT COUNT(DISTINCT specimen_group) FROM images").fetchone()[0]
+            groups = db.execute("SELECT COUNT(DISTINCT specimen_group) FROM images WHERE removed_at IS NULL").fetchone()[0]
+            removed = db.execute("SELECT COUNT(*) FROM images WHERE removed_at IS NOT NULL").fetchone()[0]
             roots = [r[0] for r in db.execute("SELECT path FROM source_roots ORDER BY path")]
         total = sum(counts.values())
-        return {"root": str(self.root), "total": total, "counts": counts, "labeled": total - counts["UNLABELED"], "groups": groups, "roots": roots}
+        return {"root": str(self.root), "total": total, "removed": removed, "counts": counts, "labeled": total - counts["UNLABELED"], "groups": groups, "roots": roots}
 
     def import_folder(self, path, frame_start=0, frame_end=0, progress=None, cancel=None):
         if type(frame_start) is not int or type(frame_end) is not int or not 0 <= frame_start <= frame_end:
@@ -181,7 +188,9 @@ class Store:
                 with self._connection() as db:
                     # A revised source must never retain a previous manual label
                     # or be mistaken for the old indexed frame.
-                    replaced += db.execute("DELETE FROM images WHERE path=? AND sha256<>?", (filename, digest)).rowcount
+                    # Keep removed versions for explicit restore/history. They
+                    # never become active just because the folder is reimported.
+                    replaced += db.execute("DELETE FROM images WHERE path=? AND sha256<>? AND removed_at IS NULL", (filename, digest)).rowcount
                     existing = {r[0] for r in db.execute("SELECT frame FROM images WHERE sha256=?", (digest,))}
                     # A touch/copy can alter mtime without changing content.
                     # A verified reimport refreshes integrity stamps so those
@@ -262,13 +271,13 @@ class Store:
         return value
 
     def images(self, filter="ALL", query="", offset=0, limit=60):
-        if filter not in LABELS | {"ALL", "UNLABELED"}:
+        if filter not in LABELS | {"ALL", "UNLABELED", "REMOVED"}:
             raise ValueError("이미지 필터가 올바르지 않습니다.")
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("페이지 범위가 올바르지 않습니다. 한 번에 1~500개를 조회할 수 있습니다.")
         if not isinstance(query, str) or len(query) > 1000:
             raise ValueError("검색어는 1000자 이하의 문자열이어야 합니다.")
-        clauses, values = [], []
+        clauses, values = ["removed_at IS NOT NULL" if filter == "REMOVED" else "removed_at IS NULL"], []
         if filter == "UNLABELED":
             clauses.append("label IS NULL")
         elif filter in LABELS:
@@ -291,7 +300,7 @@ class Store:
         if not ids:
             return []
         with self._connection() as db:
-            rows = db.execute("SELECT * FROM images WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids).fetchall()
+            rows = db.execute("SELECT * FROM images WHERE removed_at IS NULL AND id IN (" + ",".join("?" * len(ids)) + ")", ids).fetchall()
         by_id = {row["id"]: self._record(row, True) for row in rows}
         return [by_id[id_] for id_ in dict.fromkeys(ids) if id_ in by_id]
 
@@ -299,17 +308,57 @@ class Store:
         rows = self.get_images([id_])
         return rows[0].get("thumbnail") if rows else None
 
-    def _ids(self, ids, db):
-        if not isinstance(ids, (list, tuple)) or any(type(x) is not int or x <= 0 for x in ids):
+    def _ids(self, ids, db, include_removed=False):
+        if not isinstance(ids, (list, tuple)) or any(type(x) is not int or not 0 < x <= 9223372036854775807 for x in ids):
             raise ValueError("이미지 ID는 양의 정수 목록이어야 합니다.")
         ids = list(dict.fromkeys(ids))
         found = set()
         for start in range(0, len(ids), 500):
             chunk = ids[start:start + 500]
-            found.update(r[0] for r in db.execute("SELECT id FROM images WHERE id IN (" + ",".join("?" * len(chunk)) + ")", chunk))
+            where = "" if include_removed else " AND removed_at IS NULL"
+            found.update(r[0] for r in db.execute("SELECT id FROM images WHERE id IN (" + ",".join("?" * len(chunk)) + ")" + where, chunk))
         if len(found) != len(ids):
             raise ValueError("선택한 이미지 중 프로젝트에 없는 항목이 있습니다. 목록을 새로 고쳐 주세요.")
         return ids
+
+    def _set_removed(self, ids, remove):
+        """Change only catalog visibility; files and previous models stay intact.
+
+        Return IDs whose state actually changed, in request order, so an undo
+        cannot restore an item removed by an earlier operation. Validate the
+        complete request before changing any row.
+        """
+        with self._lock, self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            ids = self._ids(ids, db, include_removed=True)
+            changed = []
+            for id_ in ids:
+                row = db.execute("SELECT path,sha256,frame,metadata,removed_at FROM images WHERE id=?", (id_,)).fetchone()
+                if (row["removed_at"] is not None) == remove:
+                    continue
+                if not remove:
+                    conflict = db.execute("SELECT 1 FROM images WHERE path=? AND frame=? AND sha256<>? AND removed_at IS NULL LIMIT 1",
+                                          (row["path"], row["frame"], row["sha256"])).fetchone()
+                    if conflict:
+                        raise ValueError("원본의 새 버전이 이미 등록되어 이전 이미지를 복원할 수 없습니다. 새 버전을 확인해 주세요.")
+                    # The cache represents the old source. Never silently put
+                    # its old label onto content changed since it was removed.
+                    source = Path(row["path"])
+                    provenance = json.loads(row["metadata"]).get("provenance", {})
+                    if source.is_file():
+                        stamp = _source_stamp(source)
+                        if any(key in provenance and provenance[key] != value for key, value in stamp.items()):
+                            raise ValueError("제외한 뒤 원본이 변경된 이미지가 있습니다. 원본 폴더를 다시 가져온 뒤 복원해 주세요.")
+                changed.append(id_)
+            stamp = datetime.now(timezone.utc).isoformat() if remove else None
+            db.executemany("UPDATE images SET removed_at=? WHERE id=?", [(stamp, id_) for id_ in changed])
+        return {"removed" if remove else "restored": len(changed), "ids": changed}
+
+    def remove_images(self, ids):
+        return self._set_removed(ids, True)
+
+    def restore_images(self, ids):
+        return self._set_removed(ids, False)
 
     def label(self, ids, label, group=None):
         if label is not None and (not isinstance(label, str) or label not in LABELS):
@@ -349,11 +398,11 @@ class Store:
 
     def all_records(self):
         with self._connection() as db:
-            return [self._record(row) for row in db.execute("SELECT * FROM images ORDER BY id")]
+            return [self._record(row) for row in db.execute("SELECT * FROM images WHERE removed_at IS NULL ORDER BY id")]
 
     def training_records(self):
         with self._connection() as db:
-            return [self._record(row) for row in db.execute("SELECT * FROM images WHERE label IS NOT NULL ORDER BY id")]
+            return [self._record(row) for row in db.execute("SELECT * FROM images WHERE removed_at IS NULL AND label IS NOT NULL ORDER BY id")]
 
     def relink(self, old_root, new_root):
         old = _source_path(old_root)

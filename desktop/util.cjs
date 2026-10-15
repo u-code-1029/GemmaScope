@@ -2,7 +2,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 
-const ACTIONS = new Set(['status', 'images', 'label', 'metadata', 'train', 'cancel', 'index', 'search', 'runs', 'import', 'project', 'relink', 'export_model', 'setup']);
+const ACTIONS = new Set(['status', 'images', 'remove_images', 'restore_images', 'label', 'metadata', 'train', 'cancel', 'index', 'search', 'runs', 'import', 'project', 'relink', 'export_model', 'setup']);
 function csvCell(value) {
   let text = value == null ? '' : String(value);
   // Spreadsheet formulas must remain inert when the exported CSV is opened.

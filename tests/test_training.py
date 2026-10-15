@@ -241,6 +241,52 @@ class IndexSearchTests(unittest.TestCase):
         self.assertEqual(resumed["indexed"], 70)
         self.assertFalse((self.index_dir / "checkpoint.json").exists())
 
+    def test_unfinished_detector_rows_warn_and_recover(self):
+        records = self.records()
+        self.run["mode"] = "finetune"
+        (self.run_dir / "encoder").mkdir()
+        self.build(records)
+        for status in ("base", "error"):
+            with self.subTest(status=status):
+                db = t._index_db(self.index_dir / t._signature(self.run))
+                try:
+                    db.execute("UPDATE entries SET status=?, scores=NULL WHERE id='0'", (status,))
+                    db.commit()
+                finally:
+                    db.close()
+                with patch.object(t, "_load_model", return_value=self.model):
+                    result = t.search(records, self.run, {"query": "pore"}, self.index_dir, self.cache)
+                self.assertNotIn("0", {item["id"] for item in result["items"]})
+                self.assertEqual(result["incomplete"], 1)
+                self.assertEqual(result["unindexed"], 1)
+                self.assertEqual(result["indexed"], 5)
+                self.assertEqual(result["excluded"], 2)  # Only actual OTHER predictions.
+                self.assertIn("색인이 완료되지 않은", result["warning"])
+                repaired = self.build(records)
+                self.assertEqual(repaired["reused"], 5)
+                self.assertEqual(repaired["indexed"], 6)
+                result = t.search(records, self.run, {}, self.index_dir, self.cache)
+                self.assertIn("0", {item["id"] for item in result["items"]})
+                self.assertEqual(result["incomplete"], 0)
+                self.assertEqual(result["unindexed"], 0)
+                self.assertIsNone(result["warning"])
+
+    def test_unindexed_counts_new_and_incomplete_images_once(self):
+        records = self.records(8)
+        self.build(records[:6])
+        db = t._index_db(self.index_dir / t._signature(self.run))
+        try:
+            db.execute("UPDATE entries SET status='error', scores=NULL WHERE id='0'")
+            db.commit()
+        finally:
+            db.close()
+        result = t.search(records, self.run, {}, self.index_dir, self.cache)
+        self.assertEqual(result["incomplete"], 1)
+        self.assertEqual(result["unindexed"], 3)  # Two new IDs plus one failed ID.
+        self.assertEqual(result["indexed"] + result["stale"] + result["unindexed"], len(records))
+        self.assertNotIn("0", {item["id"] for item in result["items"]})
+        self.assertIsNotNone(result["warning"])
+
     def test_missing_index_is_actionable(self):
         with self.assertRaisesRegex(ValueError, "먼저 색인"):
             t.search(self.records(), self.run, {}, self.index_dir, self.cache)

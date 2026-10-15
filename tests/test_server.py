@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from server import Worker, bounded_float
+from server import Worker, bounded_float, training
 from PIL import Image
 
 
@@ -63,6 +63,57 @@ class WorkerTests(unittest.TestCase):
             self.worker.handle('project', {'path': str(self.root / 'another')})
         with self.assertRaisesRegex(ValueError, '진행 중'):
             self.worker.handle('label', {'ids': [], 'label': 'SEM'})
+        for action in ('remove_images', 'restore_images'):
+            with self.assertRaisesRegex(ValueError, '진행 중'):
+                self.worker.handle(action, {'ids': []})
+
+    def test_remove_restore_api_hides_known_paths_and_validates_batches(self):
+        self.worker.store.import_folder(self.source)
+        id_ = self.worker.store.all_records()[0]['id']
+        with self.assertRaises(ValueError):
+            self.worker.handle('remove_images', {'ids': [id_, 999999]})
+        self.assertEqual(self.worker.store.stats()['total'], 1)
+        self.assertEqual(self.worker.handle('remove_images', {'ids': [id_, id_]}), {'removed': 1, 'ids': [id_]})
+        self.assertFalse(self.worker.handle('known_path', {'path': str(self.source / '시료.png')})['known'])
+        self.assertEqual(self.worker.handle('images', {})['total'], 0)
+        self.assertEqual(self.worker.handle('images', {'filter': 'REMOVED'})['total'], 1)
+        self.assertEqual(self.worker.handle('restore_images', {'ids': [id_]}), {'restored': 1, 'ids': [id_]})
+        self.assertTrue(self.worker.handle('known_path', {'path': str(self.source / '시료.png')})['known'])
+
+    def test_removed_images_stay_out_of_existing_search_index_and_return_on_restore(self):
+        import numpy as np
+        self.worker.store.import_folder(self.source)
+        record = self.worker.store.all_records()[0]
+        model = self.worker.root / 'runs' / 'retained'
+        model.mkdir(parents=True)
+        coef = np.zeros((3, training.DIM), dtype=float)
+        coef[0, 0] = 12
+        training._atomic_json(model / 'classifier.json', {'schema': 1, 'classes': list(training.CLASSES),
+            'dimension': training.DIM, 'coef': coef.tolist(), 'intercept': [0., 0., 0.]})
+        run = {'id': 'retained', 'status': 'completed', 'model_path': str(model), 'mode': 'classifier', 'threshold': .95}
+        self.worker.store.save_run(run)
+        vectors = np.zeros((1, training.DIM), dtype=np.float32)
+        vectors[0, 0] = 1
+        # Model inference is replaced only for this test; the real persisted
+        # SQLite index, source integrity gate, ranking, and Worker API run.
+        with patch.object(training, '_load_model', return_value=object()), patch.object(training, '_encode', return_value=vectors):
+            training.index([record], run, {}, self.worker.index_dir(run), self.worker.cache, None, self.worker.cancel)
+        files = [path for path in self.worker.index_dir(run).rglob('*') if path.is_file()]
+        before = {path: path.read_bytes() for path in files}
+        self.assertEqual(self.worker.handle('search', {'run_id': 'retained'})['total'], 1)
+        self.worker.handle('remove_images', {'ids': [record['id']]})
+        removed = self.worker.handle('search', {'run_id': 'retained'})
+        self.assertEqual(removed['items'], [])
+        self.assertEqual((removed['total'], removed['indexed'], removed['unindexed']), (0, 0, 0))
+        self.assertEqual(self.worker.handle('search', {'run_id': 'retained', 'export': True})['items'], [])
+        self.worker.handle('restore_images', {'ids': [record['id']]})
+        restored = self.worker.handle('search', {'run_id': 'retained'})
+        self.assertEqual([item['id'] for item in restored['items']], [record['id']])
+        for path, content in before.items():
+            # SQLite read-only searches may refresh WAL bookkeeping; the actual
+            # features, manifest, and classifier must remain untouched.
+            if path.suffix not in ('.sqlite',) and not path.name.endswith(('-wal', '-shm')):
+                self.assertEqual(path.read_bytes(), content)
 
     def test_invalid_threshold_and_unknown_model_are_rejected(self):
         for value in ['NaN', 'inf', -0.1, 1.1]:

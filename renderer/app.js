@@ -18,18 +18,25 @@ const state = {
   training:{mode:'classifier',epochs:3,batch_size:1,gradient_accumulation:8,learning_rate:0.00002,threshold:0.95},
   settings:{device:'auto',offline:false}, search:{query:'',run_id:'',threshold:0.95,label:'ALL',sample:'',date_from:'',date_to:'',offset:0,limit:40},
   results:null, searchLoading:false, job:null, jobKind:null, showLogs:false, dismissedJob:null, handledJobs:new Set(), indexDirty:false,
-  connected:false, statusBusy:false, dataRequest:0, searchRequest:0, importPath:'', modalIds:[], searchSnapshot:null
+  connected:false, statusBusy:false, statusTask:null, projectGeneration:0, dataRequest:0, searchRequest:0, importPath:'', modalIds:[], searchSnapshot:null
 };
 const bridge = window.desktop;
 
-function toast(message, isError = false) {
+function toast(message, isError = false, action = null) {
   const element = document.createElement('div');
   element.className = `toast${isError ? ' error' : ''}`;
   const text = document.createElement('span'); text.textContent = String(message);
   const close = document.createElement('button'); close.textContent = '×'; close.setAttribute('aria-label','알림 닫기'); close.onclick = () => element.remove();
-  element.append(text, close); $('#toasts').append(element);
+  element.append(text);
+  if(action) {
+    $$('.toast:has(.toast-action)').forEach(item=>item.remove());
+    const button=document.createElement('button');button.className='toast-action';button.textContent=action.label;
+    button.onclick=async()=>{button.disabled=true;try{await action.run();element.remove();}catch(error){toast(errorMessage(error),true);}finally{button.disabled=false;}};
+    element.append(button);
+  }
+  element.append(close); $('#toasts').append(element);
   while($('#toasts').children.length>3)$('#toasts').firstElementChild.remove();
-  setTimeout(() => element.remove(), isError ? 10000 : 4200);
+  setTimeout(() => element.remove(), action ? 15000 : isError ? 10000 : 4200);
 }
 function errorMessage(error) { return String(error?.message || error || '작업을 완료하지 못했습니다.'); }
 async function request(action, payload = {}) {
@@ -58,29 +65,29 @@ function updateChrome() {
   $('#breadcrumb-current').textContent=names[state.view];
 }
 function render() {
+  const focused=captureFocus($('#content'));
   updateChrome();
   $('#content').innerHTML = ({dataset:renderDataset,training:renderTraining,search:renderSearch,runs:renderRuns}[state.view])();
+  if(state.view==='dataset')librarySyncSelection();
+  restoreFocus(focused,$('#content'));
   renderJob();
 }
 function statsCard(label,value,note,color,whichIcon='image') { return `<div class="stat-card"><div class="stat-dot ${color}">${icon(whichIcon)}</div><div class="stat-content"><div class="stat-top">${label}</div><div class="stat-number">${number(value)}<small>장</small></div><div class="stat-note">${note}</div></div></div>`; }
 function renderDataset() {
   const d=state.dataset, counts=state.project.counts || {};
-  const filters=[['ALL','전체',state.project.total],['UNLABELED','미분류',counts.UNLABELED],['SEM','SEM',counts.SEM],['TEM','TEM',counts.TEM],['OTHER','기타',counts.OTHER]];
+  const filters=[['ALL','전체',state.project.total],['UNLABELED','미분류',counts.UNLABELED],['SEM','SEM',counts.SEM],['TEM','TEM',counts.TEM],['OTHER','기타',counts.OTHER],['REMOVED','제외한 이미지',state.project.removed]];
   return heading('YOUR IMAGE LIBRARY','데이터셋','로컬 이미지를 모으고, 나만의 전자현미경 분류 기준을 만드세요.',`<button class="button ghost" data-action="metadata-csv">${icon('download')}메타데이터 CSV</button><button class="button primary" data-action="import" ${active()?'disabled':''}>${icon('plus')}이미지 폴더 추가</button>`)
     + `<div class="intro-panel"><div class="intro-icon">${icon('spark')}</div><div class="intro-copy"><strong>좋은 분류는, 잘 정리된 데이터에서 시작됩니다.</strong><p>SEM · TEM · 기타로 라벨을 지정하세요. 같은 시료의 이미지는 하나의 그룹으로 묶어주세요.</p></div><div class="intro-steps"><div class="intro-step active"><span>1</span>이미지 준비</div><div class="intro-step"><span>2</span>모델 학습</div><div class="intro-step"><span>3</span>검색 · 검증</div></div></div>`
     + `<div class="stats-grid">${statsCard('전체 이미지',state.project.total,'이 프로젝트에 등록된 이미지','','grid')}${statsCard('SEM',counts.SEM,'주사 전자현미경','purple')}${statsCard('TEM',counts.TEM,'투과 전자현미경','blue')}${statsCard('기타 이미지',counts.OTHER,'검색에서 제외할 이미지','gray')}</div>`
-    + `<section class="dataset-panel"><div class="panel-toolbar"><div class="panel-title">이미지 라이브러리 <span class="count">${number(d.total)}</span></div><div class="input-search">${icon('search')}<input aria-label="파일명 또는 경로 검색" id="dataset-query" placeholder="파일명 또는 경로로 검색" value="${e(d.query)}"></div></div><div class="dataset-filters">${filters.map(([value,label,count])=>`<button class="filter-tab ${d.filter===value?'active':''}" data-filter="${value}">${value!=='ALL'?'<span class="dot"></span>':''}${label}<small>${number(count)}</small></button>`).join('')}<span class="filter-end">빠른 라벨 <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div>${selectionToolbar()}`
-    + (d.loading ? '<div class="loading-inline">이미지 라이브러리를 불러오는 중</div>' : d.items.length ? `<div class="image-grid">${d.items.map(imageCard).join('')}</div>` : empty(state.project.total?'조건에 맞는 이미지가 없습니다':'첫 번째 이미지 폴더를 추가해보세요',state.project.total?'다른 라벨을 선택하거나 검색어를 바꿔보세요.':'컴퓨터에 있는 현미경 이미지를 불러오세요.<br>원본은 그대로 두고, 라벨과 학습 데이터만 이 프로젝트에 저장합니다.',state.project.total?'<button class="button" data-action="reset-filter">필터 초기화</button>':`<button class="button primary" data-action="import" ${active()?'disabled':''}>${icon('folder')}폴더에서 가져오기</button>`,'PNG · JPG · TIFF · DM3/DM4 · SER/EMI · MRC'))
+    + `<section class="dataset-panel"><div class="panel-toolbar"><div class="panel-title">이미지 라이브러리 <span class="count">${number(d.total)}</span></div><div class="input-search">${icon('search')}<input aria-label="파일명 또는 경로 검색" id="dataset-query" placeholder="파일명 또는 경로로 검색" value="${e(d.query)}"></div></div><div class="dataset-filters">${filters.map(([value,label,count])=>`<button class="filter-tab ${d.filter===value?'active':''}" data-filter="${value}" aria-pressed="${d.filter===value}">${value!=='ALL'?'<span class="dot"></span>':''}${label}<small>${number(count)}</small></button>`).join('')}<span class="filter-end">빠른 라벨 <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div>${selectionToolbar()}`
+    + (d.loading && !d.items.length ? '<div class="loading-inline">이미지 라이브러리를 불러오는 중</div>' : d.items.length ? `<div class="image-grid" aria-label="데이터셋 이미지" aria-busy="${d.loading}">${d.items.map(imageCard).join('')}</div>` : empty(libraryRemoved()?'제외한 이미지가 없습니다':state.project.total?'조건에 맞는 이미지가 없습니다':'첫 번째 이미지 폴더를 추가해보세요',libraryRemoved()?'제거한 이미지는 이곳에서 복원할 수 있습니다. 원본 파일과 기존 모델은 그대로 유지됩니다.':state.project.total?'다른 라벨을 선택하거나 검색어를 바꿔보세요.':'컴퓨터에 있는 현미경 이미지를 불러오세요.<br>원본은 그대로 두고, 라벨과 학습 데이터만 이 프로젝트에 저장합니다.',libraryRemoved()||state.project.total?'<button class="button" data-action="reset-filter">필터 초기화</button>':`<button class="button primary" data-action="import" ${active()?'disabled':''}>${icon('folder')}폴더에서 가져오기</button>`,'PNG · JPG · TIFF · DM3/DM4 · SER/EMI · MRC'))
     + `<div class="dataset-footer"><span>${icon('shield')}원본 파일을 변경하지 않습니다</span>${pager('dataset',d.offset,d.limit,d.total)}</div></section>`
     + `<p class="dataset-note">${icon('info')}기타 이미지에는 광학현미경, AFM, 그래프 등 헷갈리기 쉬운 예시를 포함하세요. 서로 다른 시료 그룹으로 학습 · 검증 · 평가를 분리합니다.</p>`;
 }
-function selectionToolbar() {
-  if(!state.selected.size) return '';
-  return `<div class="selection-toolbar"><strong>${number(state.selected.size)}장 선택</strong><button class="button" data-action="label" data-label="SEM">1 · SEM</button><button class="button" data-action="label" data-label="TEM">2 · TEM</button><button class="button" data-action="label" data-label="OTHER">3 · 기타</button><button class="button" data-action="label" data-label="">라벨 해제</button><button class="button" data-action="metadata">${icon('settings')}정보 · 그룹 편집</button><button class="button selection-end" data-action="select-all">페이지 전체 선택</button><button class="icon-button" data-action="clear-selection" aria-label="선택 해제">${icon('close')}</button></div>`;
-}
+function selectionToolbar() { return `<div id="selection-tools" class="selection-toolbar">${selectionToolbarContent()}</div>`; }
 function imageCard(item) {
-  const selected=state.selected.has(String(item.id)), metadata=item.metadata||{};
-  return `<article class="image-card ${selected?'selected':''}"><button class="thumb-button" data-action="select" data-id="${e(item.id)}" aria-label="${e(item.name)} 선택" aria-pressed="${selected}">${item.thumbnail?`<img src="${e(item.thumbnail)}" alt="${e(item.name)}" loading="lazy">`:icon('image')}<span class="selection-box">${icon('check')}</span>${item.frames>1?`<span class="frame-badge">프레임 ${Number(item.frame)+1} / ${number(item.frames)}</span>`:''}</button><div class="card-details"><span class="card-title" title="${e(item.path)}">${e(item.name)}</span><div class="card-meta">${labelBadge(item.label)}<button class="card-more" data-action="detail" data-id="${e(item.id)}" title="정보 편집">${e(metadata.sample || (item.width&&item.height ? `${item.width} × ${item.height}` : '상세 정보'))}${icon('info')}</button></div></div></article>`;
+  const selected=state.selected.has(String(item.id)), metadata=item.metadata||{}, removed=libraryRemoved();
+  return `<article class="image-card ${selected?'selected':''}" data-image-id="${e(item.id)}"><button class="thumb-button" data-action="select" data-id="${e(item.id)}" aria-label="${e(item.name)} 선택" aria-pressed="${selected}" tabindex="${String(item.id)===libraryUI.focusId?0:-1}">${item.thumbnail?`<img src="${e(item.thumbnail)}" alt="${e(item.name)}" loading="lazy">`:icon('image')}<span class="selection-box" role="checkbox" aria-label="${e(item.name)} 선택 추가·해제" aria-checked="${selected}">${icon('check')}</span>${item.frames>1?`<span class="frame-badge">프레임 ${Number(item.frame)+1} / ${number(item.frames)}</span>`:''}</button><div class="card-details"><span class="card-title" title="${e(item.path)}">${e(item.name)}</span><div class="card-meta">${labelBadge(item.label)}<button class="card-more" data-action="detail" data-id="${e(item.id)}" title="${removed?'복원 후 정보를 편집할 수 있습니다.':'정보 편집 · 더블클릭 / Enter'}" ${removed||active()?'disabled':''}>${e(metadata.sample || (item.width&&item.height ? `${item.width} × ${item.height}` : '상세 정보'))}${icon('info')}</button></div></div></article>`;
 }
 function pager(scope,offset,limit,total) { return `<div class="pager"><span>${total?`${number(offset+1)}–${number(Math.min(offset+limit,total))} / ${number(total)}`:'0장'}</span><button class="button small" data-action="page" data-scope="${scope}" data-direction="-1" aria-label="이전 페이지" ${offset===0?'disabled':''}>‹</button><button class="button small" data-action="page" data-scope="${scope}" data-direction="1" aria-label="다음 페이지" ${offset+limit>=total?'disabled':''}>›</button></div>`; }
 function environmentPanel() {
@@ -96,16 +103,16 @@ function searchWarnings(result) {
   if(!result || (!result.warning && !result.stale && !result.unindexed))return '';
   const details=[];
   if(result.stale)details.push(`변경된 이미지 ${number(result.stale)}장`);
-  if(result.unindexed)details.push(`색인에 없는 이미지 ${number(result.unindexed)}장`);
+  if(result.unindexed)details.push(`색인이 필요한 이미지 ${number(result.unindexed)}장`);
   return `<div class="notice warning search-warning">${icon('info')}<div>${e(result.warning || '검색 색인을 다시 생성하면 변경된 이미지를 반영할 수 있습니다.')}${details.length?`<br>${details.join(' · ')}`:''}</div></div>`;
 }
 function renderSearch() {
   const s=state.search,runs=validRuns(),result=state.results;
   return heading('FIND WHAT MATTERS','검색 · 검증','SEM · TEM 판별을 통과한 이미지 안에서만 검색합니다.',`<button class="button" data-action="export-results" ${!result?.total?'disabled':''}>${icon('download')}전체 결과 CSV</button>`)
     + `<section class="panel search-panel"><div class="model-toolbar"><div class="field"><label class="field-label" for="run-select">판별 모델</label><select id="run-select" data-scope="search" data-key="run_id">${!runs.length?'<option value="">완료된 학습이 없습니다</option>':runs.map(run=>`<option value="${e(run.id)}" ${String(s.run_id)===String(run.id)?'selected':''}>${run.mode==='finetune'?'미세조정':'임베딩 + 분류기'} · ${e(date(run.created_at))}</option>`).join('')}</select></div><div class="field threshold-field">${field('search','threshold','최소 통과 신뢰도','number','min="0.5" max="1" step="any"')}</div><button class="button" data-action="index" ${!runs.length||!state.project.total||active()?'disabled':''}>${icon('refresh')}검색 색인 생성</button></div><div class="search-main-row"><div class="input-search">${icon('search')}<input id="semantic-query" data-scope="search" data-key="query" value="${e(s.query)}" placeholder="예: 다공성 표면의 나노입자" aria-label="이미지 내용 검색"></div><button class="button primary" data-action="search" ${!runs.length||state.searchLoading?'disabled':''}>검색 ${icon('arrow')}</button></div><div class="search-filter-grid"><div class="field"><label class="field-label" for="search-label">이미지 종류</label><select id="search-label" data-scope="search" data-key="label"><option value="ALL" ${s.label==='ALL'?'selected':''}>SEM + TEM</option><option value="SEM" ${s.label==='SEM'?'selected':''}>SEM</option><option value="TEM" ${s.label==='TEM'?'selected':''}>TEM</option></select></div>${field('search','sample','시료 이름','text','placeholder="정확한 시료 이름"')}${field('search','date_from','취득일 · 시작','date')}${field('search','date_to','취득일 · 종료','date')}</div><p class="search-hint">${icon('shield')}기타로 지정한 이미지와 신뢰도 기준을 통과하지 못한 이미지는 검색에서 제외됩니다. 검색어를 비우면 통과한 모든 이미지를 확인합니다.</p>${state.indexDirty?`<div class="notice warning">${icon('info')}이미지 또는 판별 모델이 변경되었습니다. 현재 모델로 검색 색인을 생성한 뒤 검색하세요.</div>`:''}<details class="search-runtime"><summary class="field-help">연산 장치 · 다운로드 설정</summary><div class="field-grid">${deviceField()}</div>${offlineField()}</details></section>`
-    + searchWarnings(result)
+    + '<div id="search-results-region">' + searchWarnings(result)
     + (state.searchLoading?'<section class="dataset-panel"><div class="loading-inline">통과한 이미지에서 검색하는 중</div></section>':result?`<div class="search-results-heading"><div><h2>검색 결과 <span class="muted">${number(result.total)}장</span></h2><p>기준 ${percent(state.searchSnapshot?.threshold)} · 색인 ${number(result.indexed)}장 · 기준 미달 또는 제외 ${number(result.excluded)}장${state.searchSnapshot?.query?` · “${e(state.searchSnapshot.query)}”`:''}</p></div><span class="label-badge sem">SEM / TEM ONLY</span></div><section class="dataset-panel">${result.items?.length?`<div class="image-grid results-grid">${result.items.map((item,i)=>`<article class="image-card"><button class="thumb-button" data-action="reveal-result" data-index="${i}" aria-label="${e(item.name)} 원본 위치 열기">${item.thumbnail?`<img src="${e(item.thumbnail)}" alt="${e(item.name)}" loading="lazy">`:icon('image')}${Number(item.frame)>0?`<span class="frame-badge">프레임 ${Number(item.frame)+1}</span>`:''}</button><div class="card-details"><span class="card-title" title="${e(item.path)}">${e(item.name)}</span><div class="card-meta">${labelBadge(item.label)}<span class="score" title="판별 신뢰도">${percent(item.score)}</span></div>${item.metadata?.sample?`<p class="field-help">${e(item.metadata.sample)}</p>`:''}</div></article>`).join('')}</div>`:empty('기준을 통과한 검색 결과가 없습니다','검색어와 필터를 확인하세요. 통과 기준을 낮추면 오탐이 늘어날 수 있습니다.')}<div class="dataset-footer"><span>${icon('shield')}이미지를 누르면 원본 위치가 열립니다</span>${pager('search',s.offset,s.limit,result.total)}</div></section>`:`<section class="dataset-panel">${empty(runs.length?'찾고 싶은 이미지의 모습을 적어보세요':'먼저 판별 모델을 학습해주세요',runs.length?'검색 색인을 한 번 생성한 후, 이미지의 내용이나 시료 정보로 찾아보세요.<br>검색 전에 SEM · TEM 여부와 신뢰도를 먼저 확인합니다.':'라벨이 있는 데이터로 분류 모델을 만들면<br>SEM과 TEM만 통과시키는 로컬 이미지 검색을 시작할 수 있습니다.',runs.length?'':`<button class="button" data-view="training">학습 스튜디오로 이동 ${icon('arrow')}</button>`)}</section>`)
-    + `<p class="dataset-note">${icon('info')}텍스트 검색은 기본 EmbeddingGemma 2의 이미지 · 텍스트 임베딩을 사용합니다. 미세조정한 모델은 판별에 사용하며, 모델 또는 데이터 변경 뒤에는 색인을 다시 생성하세요.</p>`;
+    + `</div><p class="dataset-note">${icon('info')}텍스트 검색은 기본 EmbeddingGemma 2의 이미지 · 텍스트 임베딩을 사용합니다. 미세조정한 모델은 판별에 사용하며, 모델 또는 데이터 변경 뒤에는 색인을 다시 생성하세요.</p>`;
 }
 function renderRuns() {
   return heading('EXPERIMENT HISTORY','실행 기록','학습 결과와 독립 평가 지표를 비교하고, 모델을 보관하세요.',`<button class="button" data-action="refresh">${icon('refresh')}새로고침</button>`)
@@ -140,15 +147,22 @@ function renderJob() {
     for(const item of r.errors || [])logLines.push(`${item.path || ''}\n  ${item.reason || ''}`);
   }
   const logs=logLines.join('\n');
-  $('#job-region').innerHTML=`<section class="job-panel"><div class="job-main"><div class="job-icon">${icon(failed?'info':done?'check':'chip')}</div><div class="job-text"><strong>${e(titles[state.jobKind] || job.phase || '로컬 작업')} ${done?failed?'· 실패':success(job)?'· 완료':'· 중단':'· 진행 중'}</strong><p title="${e(job.error || job.message || '')}">${e(job.error || job.message || '작업을 준비하고 있습니다.')}</p></div><span class="job-progress-value">${Math.round(p*100)}%</span><div class="job-controls"><button class="button" data-action="toggle-logs">${state.showLogs?'로그 닫기':'로그'}</button>${done?'<button class="button" data-action="dismiss-job">닫기</button>':'<button class="button" data-action="cancel">중단</button>'}</div></div><div class="job-progress"><progress value="${p}" max="1" aria-label="작업 진행률"></progress></div>${state.showLogs?`<pre class="job-logs">${e(logs || job.error || job.message || '출력을 기다리는 중…')}</pre>`:''}</section>`;
-  if(state.showLogs){const log=$('.job-logs');log.scrollTop=log.scrollHeight;}
+  const region=$('#job-region'), focused=captureFocus(region), previous=$('.job-logs',region);
+  const oldScroll=previous?.scrollTop||0, follow=!previous||previous.scrollHeight-previous.clientHeight-oldScroll<24;
+  const markup=`<section class="job-panel"><div class="job-main"><div class="job-icon">${icon(failed?'info':done?'check':'chip')}</div><div class="job-text"><strong>${e(titles[state.jobKind] || job.phase || '로컬 작업')} ${done?failed?'· 실패':success(job)?'· 완료':'· 중단':'· 진행 중'}</strong><p title="${e(job.error || job.message || '')}">${e(job.error || job.message || '작업을 준비하고 있습니다.')}</p></div><span class="job-progress-value">${Math.round(p*100)}%</span><div class="job-controls"><button class="button" data-action="toggle-logs">${state.showLogs?'로그 닫기':'로그'}</button>${done?'<button class="button" data-action="dismiss-job">닫기</button>':'<button class="button" data-action="cancel">중단</button>'}</div></div><div class="job-progress"><progress value="${p}" max="1" aria-label="작업 진행률"></progress></div>${state.showLogs?`<pre class="job-logs">${e(logs || job.error || job.message || '출력을 기다리는 중…')}</pre>`:''}</section>`;
+  if(region.innerHTML!==markup){region.innerHTML=markup;restoreFocus(focused,region);}
+  if(state.showLogs){const log=$('.job-logs',region);log.scrollTop=follow?log.scrollHeight:oldScroll;}
 }
 function showModal(title, description, body, footer='') {
+  if(!$('#modal').open)libraryUI.modalOrigin=captureFocus();
+  closeLibraryMenu(false);
   $('#modal-content').innerHTML=`<div class="modal-header"><div><h2>${title}</h2><p>${description}</p></div><button class="icon-button" data-action="close-modal" aria-label="창 닫기">${icon('close')}</button></div><div class="modal-body">${body}</div>${footer?`<div class="modal-footer">${footer}</div>`:''}`;
   if(!$('#modal').open) $('#modal').showModal();
 }
 function closeModal() { $('#modal').close(); }
 function metadataModal(ids) {
+  if(!ids.length||libraryRemoved())return;
+  if(libraryBlocked())throw new Error('진행 중인 작업이 끝난 뒤 정보를 편집해주세요.');
   state.modalIds=[...ids];
   const item=ids.length===1?state.dataset.items.find(item=>String(item.id)===String(ids[0])):null;
   const m=item?.metadata||{};
@@ -157,10 +171,13 @@ function metadataModal(ids) {
 }
 
 async function refreshStatus(silent = true) {
-  if(!bridge || state.statusBusy) return;
+  if(!bridge)return;
+  if(state.statusBusy){await state.statusTask;return refreshStatus(silent);}
   state.statusBusy=true;
-  try {
+  const generation=state.projectGeneration;
+  const task=(async()=>{try {
     const data=await request('status');
+    if(generation!==state.projectGeneration)return;
     state.project=data.project||state.project;state.environment=data.environment||{};state.runs=data.runs||[];state.indexes=data.indexes||[];state.connected=true;
     if(!state.search.run_id || !state.runs.some(run=>String(run.id)===String(state.search.run_id))) { const first=validRuns()[0]; if(first){state.search.run_id=first.id;state.search.threshold=first.threshold??0.95;}else state.search.run_id=''; }
     const banner=$('#connection-banner'); banner.hidden=true;
@@ -168,18 +185,29 @@ async function refreshStatus(silent = true) {
     if(data.job) receiveJob(data.job);
     if(!silent)render();
   } catch(error) {
+    if(generation!==state.projectGeneration)return;
     state.connected=false;
     const banner=$('#connection-banner');banner.hidden=false;banner.innerHTML=`<div class="status-banner"><span>${e(errorMessage(error))}</span><button class="button small" data-action="refresh">다시 연결</button></div>`;
-  } finally {state.statusBusy=false;}
+  }})();
+  state.statusTask=task;
+  try{await task;}finally{state.statusBusy=false;state.statusTask=null;}
 }
 async function loadImages() {
   const version=++state.dataRequest;
-  state.dataset.loading=true;if(state.view==='dataset')render();
+  state.dataset.loading=true;
+  if(state.view==='dataset'){librarySyncSelection();$('.image-grid')?.setAttribute('aria-busy','true');}
   try {
-    const {filter,query,offset,limit}=state.dataset;
-    const result=await request('images',{filter,query,offset,limit});
+    const {filter,query,limit}=state.dataset;
+    let offset=state.dataset.offset, result=await request('images',{filter,query,offset,limit});
     if(version!==state.dataRequest)return;
-    Object.assign(state.dataset,{items:result.items||[],total:result.total||0});
+    if(offset>0 && offset>=result.total) {
+      offset=Math.max(0,Math.floor((result.total-1)/limit)*limit);
+      result=await request('images',{filter,query,offset,limit});
+      if(version!==state.dataRequest)return;
+    }
+    Object.assign(state.dataset,{items:result.items||[],total:result.total||0,offset});
+    const visible=new Set(state.dataset.items.map(item=>String(item.id)));
+    state.selected=new Set([...state.selected].filter(id=>visible.has(id)));
   } catch(error) {if(version===state.dataRequest)toast(errorMessage(error),true);}
   finally {if(version===state.dataRequest){state.dataset.loading=false;if(state.view==='dataset')render();}}
 }
@@ -192,7 +220,7 @@ async function completeJob(job) {
     else if(kind==='train') {toast('모델 학습이 완료되었습니다. 실행 기록에서 평가 결과를 확인하세요.');state.indexDirty=true;}
   } else if(['failed','error'].includes(job.status))toast(job.error||job.message||'작업이 실패했습니다. 로그를 확인하세요.',true);
   await refreshStatus();
-  if(kind==='import'){state.indexDirty=true;state.selected.clear();await loadImages();}
+  if(kind==='import'){state.indexDirty=true;invalidateSearch();libraryReset();await loadImages();}
   if(kind==='train'&&success(job)){const first=validRuns()[0];if(first){state.search.run_id=first.id;state.search.threshold=first.threshold??0.95;}}
   render();
   if(kind==='index'&&success(job)&&state.view==='search') await doSearch(true);
@@ -204,10 +232,11 @@ function receiveJob(job) {
   state.job=job;
   if(job.kind)state.jobKind=job.kind;else if(!state.jobKind)state.jobKind=job.action||(['import','setup','train','index'].includes(job.phase)?job.phase:null);
   renderJob();
+  if(state.view==='dataset')librarySyncSelection();
   if(terminal(job)&&!state.handledJobs.has(job.id)) {state.handledJobs.add(job.id);completeJob(job).catch(error=>toast(errorMessage(error),true));}
 }
 async function startJob(action,payload={}) {
-  if(active())throw new Error('진행 중인 작업을 완료하거나 중단한 뒤 다시 시도하세요.');
+  if(active()||libraryUI.busy)throw new Error('진행 중인 작업을 완료하거나 중단한 뒤 다시 시도하세요.');
   state.jobKind=action;state.dismissedJob=null;
   const result=await request(action,payload);
   if(result.job)receiveJob(result.job);else {await refreshStatus();toast('작업을 완료했습니다.');}
@@ -215,10 +244,14 @@ async function startJob(action,payload={}) {
   return result;
 }
 async function applyLabel(label) {
-  const ids=[...state.selected].map(Number);if(!ids.length)return;
-  await request('label',{ids,label:label||null});state.indexDirty=true;
-  toast(`${number(ids.length)}장을 ${label==='OTHER'?'기타':label||'미분류'}로 지정했습니다.`);state.selected.clear();
-  await refreshStatus();await loadImages();
+  const ids=[...state.selected].map(Number);if(!ids.length||libraryRemoved())return;
+  if(libraryBlocked())throw new Error('진행 중인 작업이 끝난 뒤 라벨을 변경해주세요.');
+  libraryUI.busy=true;librarySyncSelection();
+  try {
+    await request('label',{ids,label:label||null});state.indexDirty=true;invalidateSearch();
+    toast(`${number(ids.length)}장을 ${label==='OTHER'?'기타':label||'미분류'}로 지정했습니다.`);
+    await refreshStatus();await loadImages();
+  } finally {libraryUI.busy=false;librarySyncSelection();}
 }
 async function doSearch(reset = false) {
   if(!state.search.run_id)throw new Error('먼저 모델을 학습해주세요.');
@@ -238,13 +271,13 @@ async function doSearch(reset = false) {
 async function chooseFolder() {if(!bridge)throw new Error('GemmaScope 데스크톱 앱에서 폴더를 선택할 수 있습니다.');return bridge.chooseFolder();}
 async function changeView(view) {
   if(!names[view])return;
-  state.view=view;render();
+  clearTimeout(queryTimer);closeLibraryMenu(false);state.view=view;render();
   window.scrollTo({top:0,left:0,behavior:'instant'});
   $('.main-shell').scrollTop=0;
   if(view==='dataset'&&bridge)await loadImages();
   if(view==='runs'||view==='training')await refreshStatus(false);
 }
-async function handleAction(action,button) {
+async function handleAction(action,button,event={}) {
   switch(action) {
     case 'import': {
       if(active())throw new Error('진행 중인 작업을 먼저 완료해주세요.');
@@ -258,16 +291,30 @@ async function handleAction(action,button) {
       closeModal();await startJob('import',{path:state.importPath,frame_start:start,frame_end:end});break;
     }
     case 'project': {
-      if(active())throw new Error('작업이 진행 중일 때는 프로젝트를 변경할 수 없습니다.');
+      if(active()||libraryUI.busy)throw new Error('작업이 진행 중일 때는 프로젝트를 변경할 수 없습니다.');
       const path=await chooseFolder();if(!path)return;
-      await request('project',{path});state.selected.clear();state.dataset.offset=0;state.dataset.query='';state.dataset.filter='ALL';state.results=null;state.search.run_id='';state.indexDirty=false;state.job=null;state.jobKind=null;state.view='dataset';await refreshStatus();await loadImages();toast('프로젝트를 열었습니다.');break;
+      libraryUI.busy=true;libraryUI.switching=true;state.projectGeneration++;state.dataRequest++;
+      clearTimeout(queryTimer);libraryReset();invalidateSearch();librarySyncSelection();
+      try {
+        const changed=await request('project',{path});state.project=changed.project;
+        libraryUI.undo=[];$$('.toast:has(.toast-action)').forEach(item=>item.remove());
+        Object.assign(state.dataset,{offset:0,query:'',filter:'ALL',items:[],loading:false});
+        state.runs=[];state.indexes=[];state.search.run_id='';state.indexDirty=false;state.job=null;state.jobKind=null;state.view='dataset';
+        await refreshStatus();await loadImages();toast('프로젝트를 열었습니다.');
+      } catch(error) {await refreshStatus();await loadImages();throw error;}
+      finally {libraryUI.switching=false;libraryUI.busy=false;librarySyncSelection();}
+      break;
     }
     case 'refresh':await refreshStatus(false);if(state.view==='dataset')await loadImages();break;
     case 'environment':showModal('로컬 실행 환경','모델과 이미지 처리는 이 컴퓨터에서 실행됩니다.',`${environmentPanel()}<section class="panel"><h2>프로젝트 경로</h2><p class="path-box">${e(state.project.root||'아직 연결되지 않음')}</p><h2>원본 폴더 연결</h2><p class="field-help">폴더 위치가 바뀌면 새 위치에 연결하세요. 원본 파일을 이동하지 않습니다.</p>${(state.project.roots||[]).map((root,index)=>`<div class="environment-spec"><span>${e(typeof root==='string'?root:root.path||root.root||'')}</span><button class="button small" data-action="relink" data-index="${index}" ${active()?'disabled':''}>다시 연결</button></div>`).join('')}</section>`);break;
     case 'setup':closeModal();await startJob('setup');break;
-    case 'select':{const id=String(button.dataset.id);state.selected.has(id)?state.selected.delete(id):state.selected.add(id);render();break;}
-    case 'select-all':state.dataset.items.forEach(item=>state.selected.add(String(item.id)));render();break;
-    case 'clear-selection':state.selected.clear();render();break;
+    case 'select':librarySelect(button.dataset.id,{shiftKey:event.shiftKey,ctrlKey:event.ctrlKey,metaKey:event.metaKey,toggle:!!event.target?.closest('.selection-box')});break;
+    case 'select-all':librarySelectAll();break;
+    case 'clear-selection':state.selected.clear();librarySyncSelection();break;
+    case 'remove-images':await removeSelectedImages();break;
+    case 'restore-images':await restoreImages([...state.selected]);break;
+    case 'undo-remove':await undoImageRemoval();break;
+    case 'shortcuts':libraryShortcuts();break;
     case 'label':await applyLabel(button.dataset.label);break;
     case 'detail':metadataModal([String(button.dataset.id)]);break;
     case 'metadata':metadataModal([...state.selected]);break;
@@ -282,21 +329,21 @@ async function handleAction(action,button) {
         for(const item of state.dataset.items.filter(item=>ids.includes(String(item.id)))){const key=item.label||'';if(!batches.has(key))batches.set(key,[]);batches.get(key).push(item.id);}
         for(const [label,batchIds] of batches)await request('label',{ids:batchIds,label:label||null,group});
       }
-      closeModal();toast(`${number(ids.length)}장 정보를 저장했습니다.`);await refreshStatus();await loadImages();break;
+      closeModal();invalidateSearch();toast(`${number(ids.length)}장 정보를 저장했습니다.`);await refreshStatus();await loadImages();break;
     }
     case 'metadata-csv':
       showModal('메타데이터 CSV 가져오기','이미 등록한 이미지에 시료와 관찰 정보를 일괄 연결합니다.',`<p class="field-label">사용할 열 이름</p><div class="path-box">path, frame, sample, acquired_at, magnification, voltage_kv, description</div><p class="field-help"><strong>path</strong>는 필수입니다. 원본 파일의 절대 경로 또는 CSV 파일 기준 상대 경로를 사용하세요. <strong>frame</strong>은 0부터 시작하며 생략하면 0입니다.</p><p class="field-help">취득일은 YYYY-MM-DD 형식으로 입력하세요. CSV에 포함한 빈 값은 기존 값을 지웁니다. 파일은 UTF-8 형식으로 저장하세요.</p>`,`<button class="button" data-action="close-modal">취소</button><button class="button primary" data-action="confirm-metadata-csv">${icon('folder')}CSV 파일 선택</button>`);break;
     case 'confirm-metadata-csv': {
       if(!bridge?.importMetadata)throw new Error('데스크톱 앱에서 메타데이터 CSV를 가져올 수 있습니다.');
       const result=await bridge.importMetadata();if(!result)return;
-      closeModal();toast(`${number(result.updated)}장 메타데이터 갱신${result.skipped?` · ${number(result.skipped)}개 제외`:''}`);if(result.errors?.length)toast(result.errors.slice(0,3).map(item=>typeof item==='string'?item:`${item.line ? `${item.line}행 · ` : ''}${item.reason || '가져오기 오류'}`).join('\n'),true);await loadImages();break;
+      closeModal();invalidateSearch();toast(`${number(result.updated)}장 메타데이터 갱신${result.skipped?` · ${number(result.skipped)}개 제외`:''}`);if(result.errors?.length)toast(result.errors.slice(0,3).map(item=>typeof item==='string'?item:`${item.line ? `${item.line}행 · ` : ''}${item.reason || '가져오기 오류'}`).join('\n'),true);await loadImages();break;
     }
     case 'reveal-item':{const item=state.dataset.items.find(item=>String(item.id)===String(button.dataset.id));if(item)await bridge.openPath(item.path);break;}
     case 'reveal-result':{const item=state.results?.items?.[Number(button.dataset.index)];if(item)await bridge.openPath(item.path);break;}
     case 'relink': {
       const root=state.project.roots?.[Number(button.dataset.index)],old=typeof root==='string'?root:root?.path||root?.root;
       if(!old)throw new Error('연결할 원본 폴더를 찾지 못했습니다.');
-      const path=await chooseFolder();if(!path)return;const result=await request('relink',{old_root:old,new_root:path});closeModal();toast(`${number(result.updated)}개 파일 경로를 갱신했습니다.`);state.indexDirty=true;await refreshStatus();await loadImages();break;
+      const path=await chooseFolder();if(!path)return;const result=await request('relink',{old_root:old,new_root:path});closeModal();toast(`${number(result.updated)}개 파일 경로를 갱신했습니다.`);state.indexDirty=true;invalidateSearch();await refreshStatus();await loadImages();break;
     }
     case 'train': {
       const invalid=$$('input',$('#content')).find(input=>!input.checkValidity());if(invalid){invalid.reportValidity();return;}
@@ -314,9 +361,9 @@ async function handleAction(action,button) {
     }
     case 'run-details':{const run=state.runs.find(item=>String(item.id)===String(button.dataset.id));if(run)showRunDetails(run);break;}
     case 'export-model':{const path=await chooseFolder();if(!path)return;await request('export_model',{run_id:button.dataset.id,path});toast('모델을 선택한 폴더로 내보냈습니다.');break;}
-    case 'use-run':{const run=state.runs.find(item=>String(item.id)===String(button.dataset.id));if(run){state.search.run_id=run.id;state.search.threshold=run.threshold??0.95;state.results=null;state.indexDirty=true;await changeView('search');}break;}
-    case 'page':{const scope=button.dataset.scope;state[scope].offset=Math.max(0,state[scope].offset+Number(button.dataset.direction)*state[scope].limit);if(scope==='dataset'){state.selected.clear();await loadImages();}else await doSearch();break;}
-    case 'reset-filter':state.dataset.filter='ALL';state.dataset.query='';state.dataset.offset=0;state.selected.clear();await loadImages();break;
+    case 'use-run':{const run=state.runs.find(item=>String(item.id)===String(button.dataset.id));if(run){state.search.run_id=run.id;state.search.threshold=run.threshold??0.95;invalidateSearch();state.indexDirty=true;await changeView('search');}break;}
+    case 'page':{const scope=button.dataset.scope;state[scope].offset=Math.max(0,state[scope].offset+Number(button.dataset.direction)*state[scope].limit);if(scope==='dataset'){libraryReset();await loadImages();}else await doSearch();break;}
+    case 'reset-filter':state.dataset.filter='ALL';state.dataset.query='';state.dataset.offset=0;libraryReset();await loadImages();break;
     case 'cancel':await request('cancel');toast('중단을 요청했습니다. 현재 처리 중인 단계가 끝나면 멈춥니다.');break;
     case 'toggle-logs':state.showLogs=!state.showLogs;renderJob();break;
     case 'dismiss-job':state.dismissedJob=state.job?.id;renderJob();break;
@@ -324,37 +371,77 @@ async function handleAction(action,button) {
   }
 }
 
+const pendingActions=new WeakSet();
 document.addEventListener('click',async event=> {
-  const target=event.target.closest('[data-action],[data-view],[data-filter]');if(!target||target.disabled)return;
-  if(target.dataset.view){await changeView(target.dataset.view);return;}
-  if(target.dataset.filter){state.dataset.filter=target.dataset.filter;state.dataset.offset=0;state.selected.clear();await loadImages();return;}
-  if(target.dataset.action){target.disabled=true;try{await handleAction(target.dataset.action,target);}catch(error){toast(errorMessage(error),true);}finally{if(target.isConnected)target.disabled=false;}}
+  if(libraryUI.switching)return;
+  let target=event.target.closest('[data-action],[data-view],[data-filter]');
+  if(!target){const card=event.target.closest('.image-card[data-image-id]');if(card)librarySelect(card.dataset.imageId,event);return;}
+  if(target.disabled||pendingActions.has(target))return;
+  pendingActions.add(target);
+  const inMenu=!!target.closest('#context-menu');
+  if(inMenu)closeLibraryMenu();
+  try {
+    if(target.dataset.view){await changeView(target.dataset.view);return;}
+    if(target.dataset.filter){state.dataset.filter=target.dataset.filter;state.dataset.offset=0;libraryReset();await loadImages();return;}
+    if(target.dataset.action)await handleAction(target.dataset.action,target,event);
+  } catch(error){toast(errorMessage(error),true);}
+  finally {pendingActions.delete(target);}
 });
 let queryTimer;
+function searchInputsChanged() {
+  const hadResults=state.results||state.searchLoading;invalidateSearch();
+  if(hadResults&&state.view==='search'){
+    $('#search-results-region').innerHTML='<div class="notice">검색 조건이 바뀌었습니다. 검색 버튼이나 Enter를 눌러 다시 검색하세요.</div>';
+    $('[data-action="export-results"]').disabled=true;
+    $('[data-action="search"]').disabled=!validRuns().length;
+  }
+}
 document.addEventListener('input',event=> {
+  if(libraryUI.switching)return;
   const input=event.target;
   if(input.id==='dataset-query'){
-    state.dataset.query=input.value;state.dataset.offset=0;state.selected.clear();clearTimeout(queryTimer);
-    queryTimer=setTimeout(async()=>{const start=input.selectionStart;await loadImages();const next=$('#dataset-query');if(next){next.focus();next.setSelectionRange(start,start);}},350);return;
+    state.dataset.query=input.value;state.dataset.offset=0;state.dataRequest++;state.dataset.loading=true;
+    libraryReset();librarySyncSelection();$('.image-grid')?.setAttribute('aria-busy','true');clearTimeout(queryTimer);
+    if(!event.isComposing)queryTimer=setTimeout(()=>{if(state.view==='dataset')loadImages();},350);return;
   }
   const {scope,key}=input.dataset;if(!scope||!key||!state[scope])return;
   if(input.type==='radio'&&!input.checked)return;
   const value=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value;
   state[scope][key]=value;
+  if(scope==='search'||(scope==='settings'&&state.view==='search'))searchInputsChanged();
+});
+document.addEventListener('compositionend',event=>{
+  if(event.target.id==='dataset-query'&&!libraryUI.switching){
+    state.dataset.query=event.target.value;clearTimeout(queryTimer);
+    queryTimer=setTimeout(()=>{if(state.view==='dataset')loadImages();},350);
+  }
 });
 document.addEventListener('change',event=> {
   const input=event.target,{scope,key}=input.dataset;if(!scope||!key)return;
   if(scope==='training'&&key==='mode')render();
-  if(scope==='search'&&key==='run_id') {const run=chosenRun();state.search.threshold=run?.threshold??0.95;state.results=null;state.indexDirty=true;render();}
+  if(scope==='search'&&key==='run_id') {const run=chosenRun();state.search.threshold=run?.threshold??0.95;invalidateSearch();state.indexDirty=true;render();}
 });
-document.addEventListener('keydown',async event=> {
-  if(event.key==='Enter'&&event.target.id==='semantic-query'){event.preventDefault();try{await doSearch(true);}catch(error){toast(errorMessage(error),true);}return;}
-  if(event.target.matches('input,textarea,select')||$('#modal').open)return;
-  if(state.view!=='dataset')return;
-  if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='a'){event.preventDefault();state.dataset.items.forEach(item=>state.selected.add(String(item.id)));render();return;}
-  if(event.key==='Escape'){state.selected.clear();render();return;}
-  if(state.selected.size&&['0','1','2','3'].includes(event.key)){event.preventDefault();try{await applyLabel({'0':null,'1':'SEM','2':'TEM','3':'OTHER'}[event.key]);}catch(error){toast(errorMessage(error),true);}}
+document.addEventListener('keydown',event=>{libraryKeydown(event).catch(error=>toast(errorMessage(error),true));});
+document.addEventListener('dblclick',event=>{
+  const card=event.target.closest('.image-card[data-image-id]');
+  if(card&&!event.target.closest('.card-more,.selection-box')&&!libraryRemoved()){
+    try{metadataModal([card.dataset.imageId]);}catch(error){toast(errorMessage(error),true);}
+  }
 });
+document.addEventListener('contextmenu',event=>{
+  const card=event.target.closest('.image-card[data-image-id]');
+  if(card){event.preventDefault();showLibraryMenu(card.dataset.imageId,event.clientX,event.clientY);}
+});
+document.addEventListener('pointerdown',event=>{if(!event.target.closest('#context-menu'))closeLibraryMenu(false);});
+window.addEventListener('resize',()=>closeLibraryMenu());
+document.addEventListener('scroll',event=>{if(!event.target.closest?.('#context-menu'))closeLibraryMenu(false);},true);
+document.addEventListener('focusin',event=>{
+  const button=event.target.closest('.thumb-button[data-action="select"]');
+  $$('.image-card.keyboard-focused').forEach(card=>card.classList.remove('keyboard-focused'));
+  if(button){libraryUI.focusId=button.dataset.id;button.closest('.image-card').classList.add('keyboard-focused');}
+});
+$('#modal').addEventListener('close',()=>restoreFocus(libraryUI.modalOrigin));
+document.addEventListener('submit',event=>event.preventDefault());
 $('#modal').addEventListener('click',event=>{if(event.target===$('#modal')){const rect=$('#modal').getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)closeModal();}});
 document.querySelector('.brand').addEventListener('click',event=>{event.preventDefault();changeView('dataset');});
 

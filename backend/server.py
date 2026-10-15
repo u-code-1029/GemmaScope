@@ -148,6 +148,12 @@ class Worker:
         if action == "label":
             self.require_idle()
             return self.store.label(payload.get("ids", []), payload.get("label"), payload.get("group"))
+        if action == "remove_images":
+            self.require_idle()
+            return self.store.remove_images(payload.get("ids", []))
+        if action == "restore_images":
+            self.require_idle()
+            return self.store.restore_images(payload.get("ids", []))
         if action == "metadata":
             self.require_idle()
             return self.store.update_metadata(payload.get("ids", []), payload.get("metadata", {}))
@@ -222,9 +228,9 @@ class Worker:
             result = training.search(records, run, config, self.index_dir(run), self.cache)
             lookup = {str(record["id"]): record for record in records}
             for item in result["items"]:
-                record = lookup.get(str(item["id"]), {})
+                record = lookup.get(str(item["id"]))
                 # Search module uses current annotations too. This assertion is a second barrier.
-                if record.get("label") == "OTHER":
+                if record is None or record.get("label") == "OTHER":
                     raise RuntimeError("검색 제외 필터가 일치하지 않습니다. 인덱스를 다시 생성하세요.")
                 if not payload.get("export"):
                     item["thumbnail"] = self.store.thumbnail(item["id"])

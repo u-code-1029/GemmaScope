@@ -51,6 +51,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Python integration tests failed' }
       - name: Desktop unit tests
         run: npm test
+      - name: Install desktop interaction test tools
+        run: npm install --no-save --package-lock=false --no-audit --no-fund playwright@1.62.1
+      - name: Dataset interaction smoke test
+        run: node scripts/smoke-usability.cjs
+        env:
+          GEMMASCOPE_TEST_PYTHON: .venv/Scripts/python.exe
       - name: Build Windows x64 installer
         run: npm run dist:win -- --publish never
         env:
@@ -68,8 +74,6 @@ jobs:
           "GEMMASCOPE_INSTALLED_EXE=$InstalledExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Installed application smoke test
         run: |
-          npm install --no-save --package-lock=false --no-audit --no-fund playwright@1.62.1
-          if ($LASTEXITCODE -ne 0) { throw 'Playwright installation failed' }
           node scripts/smoke-packaged.cjs "$env:GEMMASCOPE_INSTALLED_EXE"
           if ($LASTEXITCODE -ne 0) { throw 'Installed application smoke test failed' }
       - name: Upload smoke diagnostics
@@ -77,7 +81,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: GemmaScope-Windows-validation
-          path: test-results/packaged/
+          path: |
+            test-results/packaged/
+            test-results/usability/*.json
+            test-results/usability/*.png
+            test-results/usability/*.txt
           if-no-files-found: ignore
       - name: Upload verified installer
         uses: actions/upload-artifact@v4
