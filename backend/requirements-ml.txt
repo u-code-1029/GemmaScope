@@ -1,0 +1,13 @@
+# Python 3.12+. Public releases verified against PyPI on 2026-10-15.
+# CUDA users may install the matching official PyTorch CUDA wheel first.
+torch==2.14.1
+torchvision==0.29.1
+sentence-transformers==6.1.0
+transformers==5.19.0
+datasets==5.1.0
+accelerate==1.15.0
+scikit-learn==1.9.1
+numpy==2.5.4
+Pillow==12.3.0
+safetensors==0.8.0
+rosettasciio==0.15.0

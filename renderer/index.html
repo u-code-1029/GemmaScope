@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'">
+  <title>GemmaScope · 로컬 전자현미경 이미지 스튜디오</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7L12 3Z"/><path d="m20 2 1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 11 3 3 5-5"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 6-6 5 5 3-3 4 4"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4M18 9h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v.01"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5.5 7A8 8 0 0 1 19 6l1 6M4 12l1 6a8 8 0 0 0 13.5-1"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8V4Z"/></symbol>
+  </defs></svg>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#dataset" aria-label="GemmaScope 데이터셋"><span class="brand-mark"><span></span><span></span><span></span><span></span></span><span>GemmaScope<small>MICROSCOPY STUDIO</small></span></a>
+      <div class="workspace-label">WORKSPACE <span>LOCAL</span></div>
+      <button class="project-switch" data-action="project"><svg class="icon"><use href="#i-folder"/></svg><span><strong id="project-name">로컬 프로젝트</strong><small id="project-location">작업 공간 불러오는 중</small></span><span class="project-chevron">⌄</span></button>
+      <nav aria-label="주 메뉴">
+        <button data-view="dataset" class="nav-item active"><svg class="icon"><use href="#i-grid"/></svg><span>데이터셋</span><small id="nav-count">0</small></button>
+        <button data-view="training" class="nav-item"><svg class="icon"><use href="#i-spark"/></svg><span>학습 스튜디오</span></button>
+        <button data-view="search" class="nav-item"><svg class="icon"><use href="#i-search"/></svg><span>검색 · 검증</span></button>
+        <button data-view="runs" class="nav-item"><svg class="icon"><use href="#i-clock"/></svg><span>실행 기록</span></button>
+      </nav>
+      <div class="sidebar-note"><span class="small-caps">BUILT FOR YOUR LAB</span><p>이미지의 맥락을 배우고,<br>필요한 순간 찾아보세요.</p><div class="scope-graphic" aria-hidden="true"><span></span><i></i><b></b></div></div>
+      <div class="sidebar-bottom"><div class="local-indicator"><span></span> 이미지 데이터는 이 기기에만</div><button data-action="environment" class="environment-link"><svg class="icon"><use href="#i-chip"/></svg><span id="side-environment">실행 환경 확인 중</span><span>↗</span></button><small>EmbeddingGemma 2 <span>v0.1</span></small></div>
+    </aside>
+    <main class="main-shell">
+      <header class="topbar"><div><span class="breadcrumb">워크스페이스</span><span class="divider">/</span><span id="breadcrumb-current">데이터셋</span></div><div class="topbar-right"><span class="privacy-pill"><svg class="icon"><use href="#i-shield"/></svg>로컬 전용</span><span class="device-pill" id="device-pill"><span></span>환경 확인 중</span></div></header>
+      <div class="content-wrap"><div id="connection-banner" hidden></div><div id="content" aria-live="polite"></div></div>
+      <div id="job-region" aria-live="polite"></div>
+    </main>
+  </div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>

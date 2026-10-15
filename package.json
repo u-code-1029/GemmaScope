@@ -1,0 +1,39 @@
+{
+  "name": "gemmascope",
+  "version": "0.1.0",
+  "description": "Local SEM / TEM model training and image search with EmbeddingGemma 2",
+  "main": "desktop/main.cjs",
+  "author": "GemmaScope",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/desktop.test.cjs",
+    "test:python": "python3 -m unittest discover -s tests -p 'test_*.py' -v",
+    "runtime:prepare": "node scripts/prepare-runtime.cjs",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac --arm64",
+    "dist:win": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "local.gemmascope.desktop",
+    "productName": "GemmaScope",
+    "asar": true,
+    "icon": "assets/icon.png",
+    "directories": {"output": "release"},
+    "files": ["desktop/**/*", "renderer/**/*", "package.json"],
+    "extraResources": [
+      {"from": "backend", "to": "backend", "filter": ["**/*", "!**/__pycache__/**"]},
+      {"from": "runtime/python", "to": "python"}
+    ],
+    "beforePack": "scripts/check-runtime.cjs",
+    "mac": {"target": ["dmg", "zip"], "category": "public.app-category.productivity", "identity": null},
+    "win": {"target": ["nsis"], "artifactName": "GemmaScope-Setup-${version}-${arch}.${ext}"},
+    "nsis": {"oneClick": false, "allowToChangeInstallationDirectory": true, "perMachine": false}
+  }
+}
