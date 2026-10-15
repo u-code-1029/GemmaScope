@@ -83,16 +83,18 @@ async function main() {
     const selected = async ids => {
       const expected = ids.map(String).sort();
       await page.waitForFunction(wanted => {
+        if (libraryUI.busy || libraryUI.switching || state.dataset.loading) return false;
         const actual = [...document.querySelectorAll('.image-card.selected[data-image-id]')].map(item => item.dataset.imageId).sort();
         return JSON.stringify(actual) === JSON.stringify(wanted);
       }, expected);
     };
     const focused = async id => {
-      await page.waitForFunction(wanted => document.activeElement?.matches('.thumb-button') && document.activeElement.dataset.id === wanted, String(id));
+      await page.waitForFunction(wanted => !libraryUI.busy && !libraryUI.switching && !state.dataset.loading && document.activeElement?.matches('.thumb-button') && document.activeElement.dataset.id === wanted, String(id));
     };
     const totalIs = async (total, cards) => {
       await page.waitForFunction(({ total, cards }) =>
         Number(document.querySelector('#nav-count')?.textContent.replace(/,/g, '')) === total &&
+        !libraryUI.busy && !libraryUI.switching && !state.dataset.loading &&
         !document.querySelector('#content .loading-inline') &&
         (cards == null || document.querySelectorAll('.image-card[data-image-id]').length === cards), { total, cards }, { timeout: 30000 });
     };
@@ -144,7 +146,7 @@ async function main() {
     await page.locator('[data-action="save-metadata"]').click(); await noModal();
     await totalIs(41, 40);
     await thumb(ids[1]).click(); await page.keyboard.press('1');
-    await page.waitForFunction(id => document.querySelector(`.image-card[data-image-id="${id}"] .label-badge`)?.textContent === 'SEM', ids[1]);
+    await page.waitForFunction(id => !libraryUI.busy && !state.dataset.loading && document.querySelector(`.image-card[data-image-id="${id}"] .label-badge`)?.textContent === 'SEM', ids[1]);
     await focused(ids[1]);
     const victim = await imageRecord(ids[1]);
     assert.equal(victim.label, 'SEM');
@@ -181,14 +183,14 @@ async function main() {
     assert.equal(await page.evaluate(() => document.activeElement.dataset.action), 'metadata');
     await page.keyboard.press('1');
     await page.locator('#context-menu').waitFor({ state: 'hidden' });
-    await page.waitForFunction(id => document.querySelector(`.image-card[data-image-id="${id}"] .label-badge`)?.textContent === 'SEM', ids[3]);
+    await page.waitForFunction(id => !libraryUI.busy && !state.dataset.loading && document.querySelector(`.image-card[data-image-id="${id}"] .label-badge`)?.textContent === 'SEM', ids[3]);
     await focused(ids[3]);
     await page.keyboard.press('Shift+F10');
     await page.locator('#context-menu').waitFor({ state: 'visible' });
     await page.keyboard.press('Delete');
     await totalIs(40, 40);
     await page.locator('[data-filter="REMOVED"]').click();
-    await page.waitForFunction(() => document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
+    await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
     await thumb(ids[3]).click();
     await page.locator('#selection-tools [data-action="restore-images"]').click();
     await totalIs(41, 0);
@@ -231,7 +233,7 @@ async function main() {
     checks.push('Delete inside a text field is safe; command-F focuses search; F1 opens keyboard help and Escape restores input focus');
 
     await page.locator('[data-action="page"][data-scope="dataset"][data-direction="1"]').click();
-    await page.waitForFunction(() => document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
+    await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
     const lastId = (await visibleIds())[0];
     await thumb(lastId).click(); await page.keyboard.press('Delete');
     await totalIs(40, 40);
@@ -310,7 +312,7 @@ async function main() {
     const switchProject = async folder => {
       await app.evaluate(({ dialog }, selected) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] }); }, folder);
       await page.locator('[data-action="project"]').click();
-      await page.waitForFunction(folder => document.querySelector('#project-location')?.title === folder && !libraryUI.switching && !libraryUI.busy, folder, { timeout: 30000 });
+      await page.waitForFunction(folder => document.querySelector('#project-location')?.title === folder && !libraryUI.switching && !libraryUI.busy && !state.dataset.loading, folder, { timeout: 30000 });
     };
     await switchProject(raceProject); await totalIs(0, 0);
     await app.evaluate(({ dialog }, selected) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] }); }, raceFixtures);
@@ -320,7 +322,7 @@ async function main() {
     if (await page.locator('[data-action="dismiss-job"]').count()) await page.locator('[data-action="dismiss-job"]').click();
     const newProjectId = (await visibleIds())[0];
     await thumb(newProjectId).click(); await page.keyboard.press('2');
-    await page.waitForFunction(() => document.querySelector('.image-card .label-badge')?.textContent === 'TEM');
+    await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelector('.image-card .label-badge')?.textContent === 'TEM');
     const newProjectBefore = await imageRecord(newProjectId);
     await switchProject(originalProject); await totalIs(41, 40);
     const oldIds = await visibleIds();
@@ -366,7 +368,7 @@ async function main() {
     }
     await switchProject(originalProject); await totalIs(40, 40);
     await page.locator('[data-filter="REMOVED"]').click();
-    await page.waitForFunction(() => document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
+    await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
     await thumb(pendingUndoId).click();
     await page.locator('[data-action="restore-images"]').click(); await totalIs(41, 0);
     await page.locator('[data-filter="ALL"]').click(); await totalIs(41, 40);
