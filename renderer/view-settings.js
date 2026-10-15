@@ -32,7 +32,7 @@ function applyLibraryLayout() {
   const columns=libraryColumnCount();
   const summary=$('#layout-summary'),capacity=$('#layout-capacity'),size=$('#layout-image-size-value');
   if(summary)summary.textContent=`${l.columns==='auto'?'자동 · ':''}${columns}열 × ${l.rows}행`;
-  if(capacity)capacity.textContent=`페이지당 최대 ${number(columns*l.rows)}개`;
+  if(capacity)capacity.textContent=`페이지당 최대 ${number(libraryPageCapacity(columns))}개`;
   if(size)size.textContent=`${l.imageSize}px`;
 }
 function libraryColumnCount() {
@@ -43,8 +43,12 @@ function libraryColumnCount() {
   // Dataset padding and gap are fixed independently of the search result grid.
   return Math.max(1,Math.floor((panel.clientWidth-44+16)/(d.layout.imageSize+16)));
 }
+function libraryPageCapacity(columns=libraryColumnCount()) {
+  // Keep offsets aligned with the API's 200-item maximum, even on wide displays.
+  return Math.min(200,columns*state.dataset.layout.rows);
+}
 function syncLibraryPageSize() {
-  const d=state.dataset,columns=libraryColumnCount(),limit=columns*d.layout.rows;
+  const d=state.dataset,columns=libraryColumnCount(),limit=libraryPageCapacity(columns);
   d.visibleColumns=columns;
   if(d.limit===limit)return false;
   selectionCancel({restore:false});
@@ -54,10 +58,12 @@ function syncLibraryPageSize() {
 }
 async function setLabelingOnly(enabled) {
   if(libraryUI.busy||libraryUI.switching)return;
+  const focused=captureFocus();
   selectionCancel({restore:false});
   state.dataset.labelingOnly=enabled;
   state.dataset.filter=enabled?'UNLABELED':'ALL';state.dataset.offset=0;
   libraryReset();saveLibraryPreferences();await loadImages();
+  if(state.view==='dataset'&&document.activeElement===document.body)restoreFocus(focused);
 }
 async function commitLibraryLayout(input) {
   if(libraryUI.busy||libraryUI.switching)return;
@@ -68,7 +74,11 @@ async function commitLibraryLayout(input) {
   if(key==='imageSize'&&!(value>=96&&value<=280))return;
   state.dataset.layout[key]=value;
   selectionCancel({restore:false});saveLibraryPreferences();applyLibraryLayout();
-  if(syncLibraryPageSize())await loadImages();
+  if(syncLibraryPageSize()){
+    const focused=captureFocus();
+    await loadImages();
+    if(state.view==='dataset'&&document.activeElement===document.body)restoreFocus(focused);
+  }
 }
 function datasetEmpty() {
   const d=state.dataset;

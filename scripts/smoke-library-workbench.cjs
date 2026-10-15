@@ -15,6 +15,7 @@ const fixtures = path.join(output, 'fixtures');
 const dataDir = path.join(output, 'app-data');
 const command = process.platform === 'darwin' ? 'Meta' : 'Control';
 const checks = [];
+const syntheticChecks = [];
 const errors = [];
 
 function findPython() {
@@ -134,7 +135,7 @@ async function main() {
         const grid = document.querySelector('.dataset-grid');
         if (!grid || state.dataset.loading || libraryUI.busy) return false;
         const columns = getComputedStyle(grid).gridTemplateColumns.split(/\s+/).length;
-        return state.dataset.limit === columns * state.dataset.layout.rows && grid.children.length === Math.min(state.dataset.total, state.dataset.limit);
+        return state.dataset.limit === Math.min(200, columns * state.dataset.layout.rows) && grid.children.length === Math.min(state.dataset.total, state.dataset.limit);
       });
       return page.locator('.dataset-grid').evaluate(grid => ({
         columns: getComputedStyle(grid).gridTemplateColumns.split(/\s+/).length,
@@ -154,6 +155,15 @@ async function main() {
     assert.equal(allIds.length, 41);
 
     await setLayout(2, 2);
+    await page.locator('#layout-rows').focus();
+    await page.keyboard.press('ArrowUp'); await ready(6);
+    await page.waitForFunction(() => state.dataset.layout.rows === 3 && document.activeElement?.id === 'layout-rows');
+    await page.keyboard.press('ArrowUp'); await ready(8);
+    await page.waitForFunction(() => state.dataset.layout.rows === 4 && document.activeElement?.id === 'layout-rows');
+    assert.equal(await page.locator('#layout-rows').inputValue(), '4');
+    await page.locator('#layout-rows').fill('2');
+    await page.locator('#layout-rows').press('Tab'); await ready(4);
+    checks.push('Consecutive ArrowUp presses on the row-count input change page capacity and preserve input focus after each asynchronous refresh');
     await closeLayout();
     await ready(4);
     let ids = await visibleIds();
@@ -330,11 +340,46 @@ async function main() {
     assert.equal(await page.locator('[data-filter="ALL"]').getAttribute('aria-pressed'), 'true');
     checks.push('Completed labeling state survives reload, and the completion action returns to the complete dataset');
 
+    const capacityClamp = await page.evaluate(() => {
+      const panel = document.querySelector('.dataset-panel');
+      const descriptor = Object.getOwnPropertyDescriptor(panel, 'clientWidth');
+      const saved = {
+        layout: state.dataset.layout, limit: state.dataset.limit, offset: state.dataset.offset,
+        visibleColumns: state.dataset.visibleColumns, labelingOnly: state.dataset.labelingOnly,
+      };
+      try {
+        // Only the width measurement is synthetic; the production capacity and
+        // offset synchronization code remains unchanged. No backend is mocked.
+        Object.defineProperty(panel, 'clientWidth', { configurable: true, get: () => 3600 });
+        state.dataset.layout = { columns: 'auto', rows: 12, imageSize: 96 };
+        state.dataset.labelingOnly = false;
+        state.dataset.limit = 120; state.dataset.offset = 360;
+        const columns = libraryColumnCount();
+        const changed = syncLibraryPageSize();
+        const result = { columns, requestedSlots: columns * 12, changed, limit: state.dataset.limit, offset: state.dataset.offset };
+        state.dataset.labelingOnly = true; state.dataset.limit = 120; state.dataset.offset = 360;
+        syncLibraryPageSize();
+        result.continuousOffset = state.dataset.offset;
+        return result;
+      } finally {
+        Object.assign(state.dataset, saved);
+        if (descriptor) Object.defineProperty(panel, 'clientWidth', descriptor);
+        else delete panel.clientWidth;
+      }
+    });
+    assert.ok(capacityClamp.requestedSlots > 200);
+    assert.equal(capacityClamp.changed, true);
+    assert.equal(capacityClamp.limit, 200);
+    assert.equal(capacityClamp.offset, 200);
+    assert.equal(capacityClamp.continuousOffset, 0);
+    measurements.capacityClamp = capacityClamp;
+    syntheticChecks.push('A synthetic 3600px panel measurement exercises production capacity synchronization: automatic page size is capped at the API maximum of 200, offsets align to 200, and continuous mode returns to offset zero; this does not simulate a real 3600px display or a 200-image dataset');
+
     for (const [file, hash] of originals) assert.equal(await digest(file), hash, `Original image changed: ${file}`);
     assert.deepEqual(errors, [], 'Renderer should not emit errors');
     const status = await page.evaluate(() => window.desktop.request('status'));
-    await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ passed: true, checks, measurements, modelValidation: 'not performed', images: status.project.total, counts: status.project.counts, originalsVerified: originals.size, python, errors }, null, 2));
-    console.log(`Library workbench smoke passed (${checks.length} real UI workflows); screenshots: ${output}`);
+    await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ passed: true, checks, syntheticChecks, measurements, modelValidation: 'not performed', images: status.project.total, counts: status.project.counts, originalsVerified: originals.size, python, errors }, null, 2));
+    console.log(`Library workbench smoke passed (${checks.length} real UI workflows, ${syntheticChecks.length} synthetic capacity checks); screenshots: ${output}`);
   } catch (error) {
     let failureState;
     if (page && !page.isClosed()) {
@@ -350,7 +395,7 @@ async function main() {
         focus: document.activeElement?.outerHTML, scrollY, viewport: { width: innerWidth, height: innerHeight },
       })).catch(() => null);
     }
-    await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ passed: false, checks, measurements, failureState, error: error.stack || String(error), errors }, null, 2));
+    await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ passed: false, checks, syntheticChecks, measurements, failureState, error: error.stack || String(error), errors }, null, 2));
     console.error('Renderer errors:', errors);
     throw error;
   } finally {
