@@ -1,5 +1,6 @@
 """Storage integration tests using temporary, generated images only."""
 import concurrent.futures
+from contextlib import closing
 import hashlib
 import importlib.util
 import json
@@ -240,7 +241,7 @@ class StorageTests(unittest.TestCase):
         self.store.label([id_], "TEM")
         legacy_root = self.root / "legacy-project"
         legacy_root.mkdir()
-        with self.store._connection() as current, sqlite3.connect(legacy_root / "catalog.sqlite3") as legacy:
+        with self.store._connection() as current, closing(sqlite3.connect(legacy_root / "catalog.sqlite3")) as legacy, legacy:
             create = current.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='images'").fetchone()[0]
             legacy.execute(create.replace(", removed_at TEXT", ""))
             columns = [row["name"] for row in current.execute("PRAGMA table_info(images)") if row["name"] != "removed_at"]
