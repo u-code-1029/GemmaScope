@@ -1,0 +1,58 @@
+name: Publish verified Windows installer
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Windows build run ID
+        required: true
+        type: string
+      tag:
+        description: Release version matching the installer
+        required: true
+        default: v0.1.0
+        type: string
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN_ID: ${{ inputs.run_id }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the source build
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > build-run.json
+          jq -e '.conclusion == "success" and .path == ".github/workflows/build.yml" and .head_repository.full_name == env.GH_REPO and .head_branch == "main" and (.event == "workflow_dispatch" or .event == "push")' build-run.json
+          echo "head_sha=$(jq -r .head_sha build-run.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: GemmaScope-Windows-x64
+          path: release
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish installer and checksum
+        env:
+          BUILD_SHA: ${{ steps.source.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="GemmaScope-Setup-${RELEASE_TAG#v}-x64.exe"
+          test -f "release/$installer"
+          (cd release && sha256sum "$installer" > SHA256SUMS.txt)
+          gh release create "$RELEASE_TAG" "release/$installer" release/SHA256SUMS.txt --target "$BUILD_SHA" --title "GemmaScope $RELEASE_TAG — Windows x64" --notes-file RELEASE_NOTES.md --prerelease --draft
+          gh release edit "$RELEASE_TAG" --draft=false
+          gh release view "$RELEASE_TAG" --json url,assets
