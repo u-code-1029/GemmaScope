@@ -36,10 +36,10 @@ async function main() {
     assert.deepEqual(errors, []);
     const smokeVenv = path.join(output, 'standalone venv 한글');
     await fs.rm(smokeVenv, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
-    const created = spawnSync(status.environment.python, ['-I', '-m', 'venv', smokeVenv], { env, encoding: 'utf8', timeout: 180000, windowsHide: true });
+    const created = spawnSync(status.environment.python, ['-I', '-X', 'utf8', '-m', 'venv', smokeVenv], { env, encoding: 'utf8', timeout: 180000, windowsHide: true });
     assert.equal(created.status, 0, created.error?.message || created.stderr);
     const venvPython = path.join(smokeVenv, ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python3']));
-    const pip = spawnSync(venvPython, ['-I', '-m', 'pip', '--version'], { env, encoding: 'utf8', timeout: 30000, windowsHide: true });
+    const pip = spawnSync(venvPython, ['-I', '-X', 'utf8', '-m', 'pip', '--version'], { env, encoding: 'utf8', timeout: 30000, windowsHide: true });
     assert.equal(pip.status, 0, pip.error?.message || pip.stderr);
     await fs.rm(smokeVenv, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     await page.locator('.nav-item[data-view="training"]').click();

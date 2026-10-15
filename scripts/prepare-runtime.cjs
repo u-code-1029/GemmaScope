@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 function execute(binary, args) {
-  const result = spawnSync(binary, args, { encoding: 'utf8', timeout: 180000, windowsHide: true,
+  const result = spawnSync(binary, ['-X', 'utf8', ...args], { encoding: 'utf8', timeout: 180000, windowsHide: true,
     env: { ...process.env, PYTHONUTF8: '1', PYTHONNOUSERSITE: '1' } });
   if (result.error || result.status !== 0) {
     throw new Error(`${binary}: ${result.error?.message || result.stderr || result.stdout || `exit ${result.status}`}`);
