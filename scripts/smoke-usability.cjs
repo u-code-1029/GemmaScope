@@ -88,6 +88,13 @@ async function main() {
         return JSON.stringify(actual) === JSON.stringify(wanted);
       }, expected);
     };
+    const only = async id => {
+      await thumb(id).focus();
+      await page.keyboard.press('Escape');
+      await selected([]);
+      await thumb(id).click();
+      await selected([id]);
+    };
     const focused = async id => {
       await page.waitForFunction(wanted => !libraryUI.busy && !libraryUI.switching && !state.dataset.loading && document.activeElement?.matches('.thumb-button') && document.activeElement.dataset.id === wanted, String(id));
     };
@@ -108,6 +115,10 @@ async function main() {
 
     await page.waitForSelector('[data-action="import"]');
     await page.waitForFunction(() => !document.querySelector('#device-pill').textContent.includes('확인 중'));
+    await page.evaluate(() => localStorage.setItem('gemmascope.library.preferences.v1', JSON.stringify({ columns: 5, rows: 8, imageSize: 176, labelingOnly: false })));
+    await page.reload();
+    await page.waitForSelector('[data-action="import"]');
+    await page.waitForFunction(() => !document.querySelector('#device-pill').textContent.includes('확인 중'));
     await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, fixtures);
     await page.locator('[data-action="import"]').first().click();
     await page.locator('[data-action="confirm-import"]').click();
@@ -120,17 +131,19 @@ async function main() {
     const toolbarHeight = await page.locator('#selection-tools').evaluate(element => element.getBoundingClientRect().height);
     await thumb(ids[0]).click(); await selected([ids[0]]);
     assert.equal(await page.locator('#selection-tools').evaluate(element => element.getBoundingClientRect().height), toolbarHeight);
-    await thumb(ids[1]).click(); await selected([ids[1]]);
+    await thumb(ids[1]).click(); await selected([ids[0], ids[1]]);
+    await thumb(ids[0]).click(); await selected([ids[1]]);
     await thumb(ids[3]).click({ modifiers: [command] }); await selected([ids[1], ids[3]]);
-    await thumb(ids[1]).click();
+    await thumb(ids[3]).click({ modifiers: [command] }); await selected([ids[1]]);
+    await only(ids[1]);
     await thumb(ids[3]).click({ modifiers: ['Shift'] }); await selected([ids[1], ids[2], ids[3]]);
     await card(ids[0]).locator('.selection-box').click(); await selected([ids[0], ids[1], ids[2], ids[3]]);
     await card(ids[1]).locator('.selection-box').click(); await selected([ids[0], ids[2], ids[3]]);
     assert.equal(await page.locator('#selection-tools').evaluate(element => element.getBoundingClientRect().height), toolbarHeight);
     await page.screenshot({ path: path.join(output, 'selection.png') });
-    checks.push('Single selection replaces, modifier click toggles, Shift selects a range, checkbox toggles independently');
+    checks.push('Plain click adds selection and repeated click removes it, modifier click still toggles, Shift selects a range, and checkbox toggles independently');
 
-    await thumb(ids[0]).click();
+    await only(ids[0]);
     await page.keyboard.press('ArrowRight'); await selected([ids[1]]); await focused(ids[1]);
     await page.keyboard.press('Space'); await selected([]); await focused(ids[1]);
     await page.keyboard.press('Space'); await selected([ids[1]]);
@@ -145,14 +158,14 @@ async function main() {
     await page.locator('#meta-sample').fill('원본 보존 확인 시료');
     await page.locator('[data-action="save-metadata"]').click(); await noModal();
     await totalIs(41, 40);
-    await thumb(ids[1]).click(); await page.keyboard.press('1');
+    await only(ids[1]); await page.keyboard.press('1');
     await page.waitForFunction(id => !libraryUI.busy && !state.dataset.loading && document.querySelector(`.image-card[data-image-id="${id}"] .label-badge`)?.textContent === 'SEM', ids[1]);
     await focused(ids[1]);
     const victim = await imageRecord(ids[1]);
     assert.equal(victim.label, 'SEM');
     assert.equal(victim.group, 'usability-specimen');
     assert.equal(victim.metadata.sample, '원본 보존 확인 시료');
-    await thumb(ids[1]).click();
+    await only(ids[1]);
     await page.keyboard.press('Delete');
     await totalIs(40, 40);
     assert.equal(await card(ids[1]).count(), 0);
@@ -168,7 +181,7 @@ async function main() {
     assert.equal((await dataset('REMOVED')).total, 0);
     checks.push('Delete removes only the dataset record; command-Z restores its label, group, and metadata; original bytes survive');
 
-    await thumb(ids[0]).click();
+    await only(ids[0]);
     await thumb(ids[1]).click({ modifiers: [command] });
     await thumb(ids[0]).click({ button: 'right' });
     await page.locator('#context-menu').waitFor({ state: 'visible' });
@@ -191,14 +204,14 @@ async function main() {
     await totalIs(40, 40);
     await page.locator('[data-filter="REMOVED"]').click();
     await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
-    await thumb(ids[3]).click();
+    await only(ids[3]);
     await page.locator('#selection-tools [data-action="restore-images"]').click();
     await totalIs(41, 0);
     assert.equal((await dataset('REMOVED')).total, 0);
     checks.push('Context menu preserves existing multi-selection, selects unselected targets, supports Home/End/Escape and Shift-F10, accepts numeric labeling/Delete, and restores from REMOVED');
 
     await page.locator('[data-filter="ALL"]').click(); await totalIs(41, 40);
-    await thumb(ids[0]).click();
+    await only(ids[0]);
     const beforeIME = await imageRecord(ids[0]);
     const imeEvents = await page.evaluate(() => {
       const target = document.activeElement;
@@ -235,7 +248,7 @@ async function main() {
     await page.locator('[data-action="page"][data-scope="dataset"][data-direction="1"]').click();
     await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
     const lastId = (await visibleIds())[0];
-    await thumb(lastId).click(); await page.keyboard.press('Delete');
+    await only(lastId); await page.keyboard.press('Delete');
     await totalIs(40, 40);
     assert.equal(await page.locator('[data-action="page"][data-scope="dataset"][data-direction="-1"]').isDisabled(), true);
     assert.match(await page.locator('.dataset-footer .pager').innerText(), /1[–-]40\s*\/\s*40/);
@@ -321,16 +334,16 @@ async function main() {
     await totalIs(1, 1);
     if (await page.locator('[data-action="dismiss-job"]').count()) await page.locator('[data-action="dismiss-job"]').click();
     const newProjectId = (await visibleIds())[0];
-    await thumb(newProjectId).click(); await page.keyboard.press('2');
+    await only(newProjectId); await page.keyboard.press('2');
     await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelector('.image-card .label-badge')?.textContent === 'TEM');
     const newProjectBefore = await imageRecord(newProjectId);
     await switchProject(originalProject); await totalIs(41, 40);
     const oldIds = await visibleIds();
     const pendingUndoId = oldIds.at(-1);
-    await thumb(pendingUndoId).click(); await page.keyboard.press('Delete');
+    await only(pendingUndoId); await page.keyboard.press('Delete');
     await totalIs(40, 40);
     assert.ok((await visibleIds()).includes(newProjectId), 'Both projects must contain the same selected numeric ID');
-    await thumb(newProjectId).click(); await selected([newProjectId]);
+    await only(newProjectId);
     await page.evaluate(() => {
       const original = request;
       window.__usabilityRace = { original, gap: false, gapReached: false, attemptedMutations: [], switching: false };
@@ -369,7 +382,7 @@ async function main() {
     await switchProject(originalProject); await totalIs(40, 40);
     await page.locator('[data-filter="REMOVED"]').click();
     await page.waitForFunction(() => !libraryUI.busy && !state.dataset.loading && document.querySelectorAll('.image-card[data-image-id]').length === 1 && !document.querySelector('#content .loading-inline'));
-    await thumb(pendingUndoId).click();
+    await only(pendingUndoId);
     await page.locator('[data-action="restore-images"]').click(); await totalIs(41, 0);
     await page.locator('[data-filter="ALL"]').click(); await totalIs(41, 40);
     await assertOriginals();

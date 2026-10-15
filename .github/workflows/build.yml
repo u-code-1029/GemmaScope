@@ -57,6 +57,10 @@ jobs:
         run: node scripts/smoke-usability.cjs
         env:
           GEMMASCOPE_TEST_PYTHON: .venv/Scripts/python.exe
+      - name: Drag selection and continuous labeling smoke test
+        run: node scripts/smoke-library-workbench.cjs
+        env:
+          GEMMASCOPE_TEST_PYTHON: .venv/Scripts/python.exe
       - name: Build Windows x64 installer
         run: npm run dist:win -- --publish never
         env:
@@ -86,6 +90,9 @@ jobs:
             test-results/usability/*.json
             test-results/usability/*.png
             test-results/usability/*.txt
+            test-results/workbench/*.json
+            test-results/workbench/*.png
+            test-results/workbench/*.txt
           if-no-files-found: ignore
       - name: Upload verified installer
         uses: actions/upload-artifact@v4

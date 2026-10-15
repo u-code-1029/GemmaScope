@@ -6,7 +6,7 @@ const macKeyboard = /Mac/.test(navigator.platform);
 const commandKey = macKeyboard ? '⌘' : 'Ctrl';
 function editingText(target) { return !!target?.closest('input,textarea,select,[contenteditable=""],[contenteditable="true"],[role="textbox"]'); }
 function libraryRemoved() { return state.dataset.filter === 'REMOVED'; }
-function libraryBlocked() { return !!(active() || libraryUI.busy || state.dataset.loading); }
+function libraryBlocked() { return !!(active() || libraryUI.busy || libraryUI.switching || state.dataset.loading); }
 function libraryButton(id) { return $$('.thumb-button[data-action="select"]').find(button=>button.dataset.id===String(id)); }
 function captureFocus(root=document) {
   const current=document.activeElement;
@@ -21,6 +21,7 @@ function restoreFocus(saved, root=document) {
   if(saved.start!=null && ['text','search','url','tel','password'].includes(current.type))current.setSelectionRange(saved.start,saved.end);
 }
 function libraryReset() {
+  if(typeof selectionCancel==='function')selectionCancel({restore:false});
   state.selected.clear(); libraryUI.focusId=null; libraryUI.anchorId=null; closeLibraryMenu(false);
 }
 function invalidateSearch() {
@@ -35,6 +36,8 @@ function librarySyncSelection() {
     button.setAttribute('aria-pressed',String(selected)); button.tabIndex=id===libraryUI.focusId?0:-1;
     const checkbox=$('.selection-box',card);checkbox.setAttribute('aria-checked',String(selected));
   });
+  const controlsBlocked=libraryUI.busy||libraryUI.switching||state.dataset.loading;
+  $$('#labeling-only,[data-layout],[data-action="reset-layout"]').forEach(control=>{control.disabled=controlsBlocked;});
   const toolbar=$('#selection-tools');
   if(toolbar){const markup=selectionToolbarContent();if(toolbar.innerHTML!==markup){const focused=captureFocus(toolbar);toolbar.innerHTML=markup;restoreFocus(focused,toolbar);}}
 }
@@ -43,14 +46,14 @@ function libraryFocus(id, scroll=false) {
   const button=libraryButton(id);button?.focus({preventScroll:true});
   if(scroll)button?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
-function librarySelect(id, {shiftKey=false,ctrlKey=false,metaKey=false,toggle=false}={}) {
+function librarySelect(id, {shiftKey=false,ctrlKey=false,metaKey=false,toggle=false,replace=false}={}) {
   id=String(id);const ids=state.dataset.items.map(item=>String(item.id));
-  if(!ids.includes(id) || state.dataset.loading || libraryUI.busy)return;
+  if(!ids.includes(id) || state.dataset.loading || libraryUI.busy || libraryUI.switching)return;
   if(shiftKey && ids.includes(libraryUI.anchorId)) {
     const a=ids.indexOf(libraryUI.anchorId),b=ids.indexOf(id);
     if(!ctrlKey&&!metaKey)state.selected.clear();
     ids.slice(Math.min(a,b),Math.max(a,b)+1).forEach(item=>state.selected.add(item));
-  } else if(ctrlKey||metaKey||toggle) {
+  } else if(!replace||ctrlKey||metaKey||toggle) {
     state.selected.has(id)?state.selected.delete(id):state.selected.add(id);libraryUI.anchorId=id;
   } else {state.selected=new Set([id]);libraryUI.anchorId=id;}
   libraryFocus(id);
@@ -62,7 +65,7 @@ function librarySelectAll() {
 function selectionToolbarContent() {
   const count=state.selected.size, disabled=libraryBlocked()?'disabled':'';
   const selectAll=`<button class="button selection-end" data-action="select-all" ${state.dataset.loading?'disabled':''}>페이지 전체 선택</button>`;
-  if(!count)return `<span class="selection-hint">${libraryRemoved()?'제외한 이미지를 선택해 복원할 수 있습니다.':'클릭으로 선택 · Shift로 범위 선택 · Ctrl / ⌘로 추가 선택'}</span>${selectAll}`;
+  if(!count)return `<span class="selection-hint">${libraryRemoved()?'제외한 이미지를 선택해 복원할 수 있습니다.':'클릭으로 추가·해제 · 드래그로 추가 선택 · Shift+드래그로 선택 반전'}</span>${selectAll}`;
   const actions=libraryRemoved()?`<button class="button primary" data-action="restore-images" ${disabled}>${icon('refresh')}데이터셋으로 복원</button>`:
     `<button class="button" data-action="label" data-label="SEM" ${disabled}>1 · SEM</button><button class="button" data-action="label" data-label="TEM" ${disabled}>2 · TEM</button><button class="button" data-action="label" data-label="OTHER" ${disabled}>3 · 기타</button><button class="button" data-action="label" data-label="" ${disabled}>0 · 라벨 해제</button><button class="button" data-action="metadata" ${disabled}>${icon('settings')}정보 · 그룹 편집</button><button class="button danger-ghost" data-action="remove-images" title="데이터셋에서만 제거합니다. 원본 파일은 보존됩니다." ${disabled}>${icon('trash')}제거 <kbd>Del</kbd></button>`;
   return `<strong>${number(count)}장 선택</strong>${actions}${selectAll}<button class="icon-button" data-action="clear-selection" aria-label="선택 해제 · Esc">${icon('close')}</button>`;
@@ -109,7 +112,7 @@ function closeLibraryMenu(restore=true) {
 }
 function showLibraryMenu(id, x, y) {
   if(libraryUI.switching||state.view!=='dataset'||state.dataset.loading||$('#modal').open)return;
-  id=String(id);if(!state.selected.has(id))librarySelect(id);
+  id=String(id);if(!state.selected.has(id))librarySelect(id,{replace:true});
   libraryUI.menuOrigin=id;libraryUI.focusId=id;
   const disabled=libraryBlocked()?'disabled':'', menu=$('#context-menu');
   const item=(label,action,shortcut='',attributes='')=>`<button role="menuitem" class="context-menu-item ${action==='remove-images'?'danger':''}" data-action="${action}" ${attributes}><span>${label}</span>${shortcut?`<kbd>${shortcut}</kbd>`:''}</button>`;
@@ -128,10 +131,14 @@ function showLibraryMenu(id, x, y) {
   $('button:not(:disabled)',menu)?.focus({preventScroll:true});
 }
 function libraryShortcuts() {
-  const rows=[['클릭 / 체크박스','한 장 선택 / 선택 추가·해제'],[`${commandKey}+클릭 / Shift+클릭`,'여러 장 선택 / 연속 범위 선택'],['방향키 / Shift+방향키','이미지 이동 / 범위 선택'],['Space / Enter / 더블클릭','선택 추가·해제 / 이미지 정보·미리보기'],[`${commandKey}+A`,'현재 페이지 전체 선택'],['1 / 2 / 3 / 0','SEM / TEM / 기타 / 라벨 해제'],[macKeyboard?'Delete(⌫) / Fn+Delete':'Delete','선택 이미지를 데이터셋에서 제거'],[`${commandKey}+Z`,'최근 이미지 제거 실행 취소'],['우클릭 / Shift+F10','선택 이미지 메뉴'],[`${commandKey}+F`,'현재 화면의 검색창으로 이동'],['Esc','메뉴·대화상자 닫기 / 선택 해제'],['F1 / ?','단축키 안내']];
+  const rows=[['클릭 / 체크박스','Ctrl 없이 선택 추가·해제'],['드래그 / Shift+드래그','사각형 안의 이미지 추가 선택 / 시작 시점의 선택 반전'],['Shift+클릭','연속 범위 선택'],['방향키 / Shift+방향키','한 장씩 이동·선택 / 범위 선택'],['Space / Enter / 더블클릭','선택 추가·해제 / 이미지 정보·미리보기'],[`${commandKey}+A`,'현재 페이지 전체 선택'],['1 / 2 / 3 / 0','SEM / TEM / 기타 / 라벨 해제'],[macKeyboard?'Delete(⌫) / Fn+Delete':'Delete','선택 이미지를 데이터셋에서 제거'],[`${commandKey}+Z`,'최근 이미지 제거 실행 취소'],['우클릭 / Shift+F10','선택 이미지 메뉴'],[`${commandKey}+F`,'현재 화면의 검색창으로 이동'],['Esc','드래그 취소 / 메뉴·대화상자 닫기 / 선택 해제'],['F1 / ?','단축키 안내']];
   showModal('마우스 · 키보드 사용 안내','입력 중에는 글자 편집 단축키를 그대로 사용합니다.',`<table class="shortcut-table"><tbody>${rows.map(([keys,description])=>`<tr><th><kbd>${e(keys)}</kbd></th><td>${e(description)}</td></tr>`).join('')}</tbody></table><p class="field-help">제거는 현재 프로젝트에서만 적용됩니다. 원본 파일과 기존 학습 모델은 변경되지 않으며, ‘제외한 이미지’에서 앱을 다시 연 뒤에도 복원할 수 있습니다.</p>`,'<button class="button primary" data-action="close-modal">확인</button>');
 }
 async function libraryKeydown(event) {
+  if(typeof selectionIsDragging==='function'&&selectionIsDragging()) {
+    if(event.key==='Escape'){event.preventDefault();selectionCancel();}
+    return;
+  }
   if(libraryUI.switching||event.isComposing||event.keyCode===229)return;
   const key=event.key, modifier=event.ctrlKey||event.metaKey, menu=$('#context-menu');
   if(!menu.hidden) {
@@ -182,6 +189,6 @@ async function libraryKeydown(event) {
     const columns=Math.max(1,buttons.filter(button=>Math.abs(button.getBoundingClientRect().top-firstTop)<3).length);
     const delta={ArrowLeft:-1,ArrowRight:1,ArrowUp:-columns,ArrowDown:columns};
     const next=key==='Home'?0:key==='End'?buttons.length-1:Math.max(0,Math.min(buttons.length-1,index+delta[key]));
-    librarySelect(buttons[next].dataset.id,{shiftKey:event.shiftKey});libraryFocus(buttons[next].dataset.id,true);
+    librarySelect(buttons[next].dataset.id,{shiftKey:event.shiftKey,replace:true});libraryFocus(buttons[next].dataset.id,true);
   }
 }
