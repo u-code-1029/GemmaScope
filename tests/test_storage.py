@@ -9,6 +9,7 @@ import struct
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -303,8 +304,22 @@ class StorageTests(unittest.TestCase):
         source = self.sources / "stack.mrc"
         source.write_bytes(header + pixels.tobytes())
         before = source.read_bytes()
-        result = self.store.import_folder(self.sources, 1, 2)
+        # Retain the native mapping objects so refcount/GC cannot accidentally
+        # make this pass. This includes mappings created during Dask _meta
+        # inference, which are not reachable from the final computed frame.
+        mappings = []
+        original_memmap = np.memmap
+        class TrackedMemmap(original_memmap):
+            def __new__(cls, *args, **kwargs):
+                result = super().__new__(cls, *args, **kwargs)
+                if result._mmap is not None:
+                    mappings.append(result._mmap)
+                return result
+        with patch("numpy.memmap", TrackedMemmap):
+            result = self.store.import_folder(self.sources, 1, 2)
         self.assertEqual(result["imported"], 2, result)
+        self.assertGreaterEqual(len(mappings), 3)
+        self.assertTrue(all(mapping.closed for mapping in mappings), "Every Dask metadata/frame source mapping must be explicitly closed")
         self.assertEqual([(r["frame"], r["frames"], r["width"], r["height"]) for r in self.store.all_records()], [(1, 3, 10, 8), (2, 3, 10, 8)])
         self.assertEqual(source.read_bytes(), before)
         # On Windows an outstanding mmap prevents this immediate move. Keep

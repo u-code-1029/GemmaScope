@@ -12,6 +12,7 @@ import copy
 import math
 import mmap
 import struct
+import threading
 import warnings
 from pathlib import Path
 
@@ -19,6 +20,7 @@ RASTER_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", 
 SCIENTIFIC_EXTENSIONS = {".dm3", ".dm4", ".ser", ".emi", ".mrc"}
 SUPPORTED_EXTENSIONS = RASTER_EXTENSIONS | SCIENTIFIC_EXTENSIONS
 PREPROCESS_VERSION = "rgb-minmax-2048-v1"
+_READER_GRAPH_LOCK = threading.RLock()
 
 
 class UnsupportedImage(ValueError):
@@ -231,6 +233,46 @@ def _render_scientific_frame(data):
         _close_mapped_arrays(pixels, data)
 
 
+def _owned_memmap_chunk(slices, file, dtypes, shape, key=None, positions=False, **kwargs):
+    """A RosettaSciIO Dask chunk whose source mapping has an explicit owner.
+
+    RosettaSciIO 0.15's slice_memmap returns a live mapped view. Dask also calls
+    it while inferring _meta, so cleaning only compute() results misses maps.
+    Materialize just this requested chunk and close its mapping before return.
+    """
+    import numpy as np
+    selection = np.squeeze(slices)[()]
+    mapped = np.memmap(file, dtypes, shape=shape, **kwargs)
+    try:
+        values = mapped[key] if key is not None else mapped
+        if positions:
+            output = np.array(values[selection], copy=True, subok=False)
+            if -1 in selection:
+                output[selection == -1] = 0
+            return output
+        if selection.ndim == 1:
+            index = slice(*tuple(selection))
+        else:
+            index = tuple(slice(int(pair[0]), int(pair[1])) for pair in selection)
+        return np.array(values[index], copy=True, subok=False)
+    finally:
+        _close_mapped_arrays(mapped)
+
+
+def _read_scientific_signals(adapter, path):
+    # Scope the compatibility adapter to graph creation. Dask stores the owned
+    # callable in its graph; decoding later does not depend on this module hook.
+    # Serializing installation/restoration also protects concurrent importers.
+    distributed = importlib.import_module("rsciio.utils._distributed")
+    with _READER_GRAPH_LOCK:
+        original = distributed.slice_memmap
+        distributed.slice_memmap = _owned_memmap_chunk
+        try:
+            return adapter.file_reader(str(path), lazy=True)
+        finally:
+            distributed.slice_memmap = original
+
+
 def _scientific_frames(path, start, end):
     suffix = path.suffix.lower()
     if suffix == ".mrc":
@@ -247,7 +289,7 @@ def _scientific_frames(path, start, end):
     except ImportError as exc:
         raise MissingReader("과학 이미지 형식 처리를 위해 환경 설정에서 RosettaSciIO를 설치해 주세요.") from exc
     Image, _ = _pillow()
-    signals = adapter.file_reader(str(path), lazy=True)
+    signals = _read_scientific_signals(adapter, path)
     eligible = []
     rejected = []
     total = 0
