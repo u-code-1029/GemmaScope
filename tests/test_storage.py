@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from backend.readers import UnsupportedImage, _mapped_metadata, _reject_mrc_volume, _signal_layout
+from backend.readers import UnsupportedImage, _mapped_metadata, _reject_mrc_volume, _render_scientific_frame, _signal_layout, iter_frames
 from backend.storage import ImportCancelled, Store, list_image_files
 
 
@@ -307,9 +307,46 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(result["imported"], 2, result)
         self.assertEqual([(r["frame"], r["frames"], r["width"], r["height"]) for r in self.store.all_records()], [(1, 3, 10, 8), (2, 3, 10, 8)])
         self.assertEqual(source.read_bytes(), before)
+        # On Windows an outstanding mmap prevents this immediate move. Keep
+        # rendered results alive to ensure their pixels own independent memory.
+        moved = source.with_name("moved-stack.mrc")
+        source.rename(moved)
+        frames = iter_frames(moved, 0, 2)
+        first = next(frames)
+        try:
+            renamed = moved.with_name("cancelled-stack.mrc")
+            moved.rename(renamed)  # Also works while the generator is suspended.
+        finally:
+            frames.close()
+        renamed.unlink()
+        self.assertEqual(first["image"].size, (10, 8))
+        self.assertEqual(len(first["image"].tobytes()), 10 * 8 * 3)
 
 
 class ScientificLayoutTests(unittest.TestCase):
+    def test_mapped_frame_owns_pixels_and_releases_source_without_gc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "mapped-frame.bin"
+            np.arange(16, dtype="float32").tofile(source)
+            retained_mapping = np.memmap(source, dtype="float32", mode="r", shape=(4, 4))
+            view = np.asarray(retained_mapping)[1:, 1:]
+            image, width, height, _, _ = _render_scientific_frame(view)
+            self.assertTrue(retained_mapping._mmap.closed)
+            source.unlink()
+            self.assertEqual((width, height), (3, 3))
+            self.assertEqual(image.getpixel((0, 0)), (0, 0, 0))
+            self.assertEqual(image.getpixel((2, 2)), (255, 255, 255))
+
+    def test_mapped_source_released_when_normalization_rejects_pixels(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "invalid-frame.bin"
+            np.full((4, 4), np.nan, dtype="float32").tofile(source)
+            retained_mapping = np.memmap(source, dtype="float32", mode="r", shape=(4, 4))
+            with self.assertRaises(UnsupportedImage):
+                _render_scientific_frame(np.asarray(retained_mapping))
+            self.assertTrue(retained_mapping._mmap.closed)
+            source.unlink()
+
     def test_only_two_signal_axes_and_one_navigation_axis(self):
         array = np.zeros((3, 4, 5), dtype=np.uint16)
         axes = [{"index_in_array": i, "navigate": i == 0} for i in range(3)]

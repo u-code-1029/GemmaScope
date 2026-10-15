@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import copy
 import math
+import mmap
 import struct
 import warnings
 from pathlib import Path
@@ -190,6 +191,46 @@ def _reject_mrc_volume(path):
     raise ValueError("MRC 크기 정보가 올바르지 않습니다.")
 
 
+def _close_mapped_arrays(*arrays):
+    """Release mappings owned by this decode, including ndarray.base views.
+
+    RosettaSciIO's lazy DM/MRC readers can return numpy.memmap slices. Merely
+    dropping the result is insufficient when a Dask task retains a reference,
+    and Windows then prevents the source from being moved or removed.
+    Call only after copying pixels out of the mapping; never return those views.
+    """
+    seen = set()
+    for array in arrays:
+        while array is not None and id(array) not in seen:
+            seen.add(id(array))
+            mapping = array if isinstance(array, mmap.mmap) else getattr(array, "_mmap", None)
+            if mapping is not None and not mapping.closed:
+                mapping.close()
+            array = getattr(array, "base", None)
+
+
+def _render_scientific_frame(data):
+    import numpy as np
+    Image, _ = _pillow()
+    pixels = None
+    try:
+        if hasattr(data, "compute"):
+            # Avoid worker-thread task state retaining a mapped chunk after
+            # compute() returns. This computes only the selected 2D slice.
+            data = data.compute(scheduler="synchronous")
+        pixels = np.asarray(data)
+        if pixels.ndim != 2 or np.iscomplexobj(pixels) or pixels.dtype.kind not in "biuf":
+            raise UnsupportedImage("실수형 2D 이미지 데이터만 지원합니다.")
+        dtype = str(pixels.dtype)
+        # A private copy must outlive explicit mmap closure, including errors
+        # during normalization and consumers that stop after the first yield.
+        copied = np.array(pixels, dtype=np.float32, copy=True, order="C")
+        rendered = _normalize(Image.fromarray(copied, "F"))
+        return (*rendered, dtype)
+    finally:
+        _close_mapped_arrays(pixels, data)
+
+
 def _scientific_frames(path, start, end):
     suffix = path.suffix.lower()
     if suffix == ".mrc":
@@ -229,12 +270,7 @@ def _scientific_frames(path, start, end):
                 selection = [slice(None)] * len(shape)
                 selection[nav] = frame - offset
                 data = data[tuple(selection)]
-            if hasattr(data, "compute"):
-                data = data.compute()
-            pixels = np.asarray(data)
-            if pixels.ndim != 2 or np.iscomplexobj(pixels) or pixels.dtype.kind not in "biuf":
-                raise UnsupportedImage("실수형 2D 이미지 데이터만 지원합니다.")
-            image, width, height, normalization = _normalize(Image.fromarray(pixels.astype("float32"), "F"))
+            image, width, height, normalization, dtype = _render_scientific_frame(data)
             md = _mapped_metadata(signal)
             tem = _get(md, "Acquisition_instrument", "TEM") or _get(md, "Acquisition_instrument", "SEM") or {}
             metadata = {"sample": _get(md, "Sample", "description") or "", "acquired_at": _get(md, "General", "date") or "",
@@ -242,7 +278,7 @@ def _scientific_frames(path, start, end):
                         "description": _get(md, "General", "title") or "",
                         "provenance": {"reader": "RosettaSciIO/" + plugin, "format": suffix[1:], "signal_index": number,
                                        "frame": frame, "signal_frame": frame - offset, "shape": list(shape),
-                                       "dtype": str(pixels.dtype), "axes": _json_safe(signal.get("axes", [])),
+                                       "dtype": dtype, "axes": _json_safe(signal.get("axes", [])),
                                        "source_metadata": _json_safe(md), "normalization": normalization,
                                        "original_metadata_keys": list(signal.get("original_metadata", {}))[:40],
                                        "unsupported_signals": len(rejected)}}
